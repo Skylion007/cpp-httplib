@@ -1507,6 +1507,9 @@ public:
   Result Options(const std::string &path, const Headers &headers);
   // clang-format on
 
+  // Streaming API: Open a stream for reading response body incrementally
+  StreamHandle open_stream(const std::string &path);
+  StreamHandle open_stream(const std::string &path, const Headers &headers);
   bool send(Request &req, Response &res, Error &error);
   Result send(const Request &req);
 
@@ -1875,6 +1878,10 @@ public:
   Result Options(const std::string &path, const Headers &headers);
   // clang-format on
 
+  // Streaming API: Open a stream for reading response body incrementally
+  ClientImpl::StreamHandle open_stream(const std::string &path);
+  ClientImpl::StreamHandle open_stream(const std::string &path,
+                                       const Headers &headers);
   bool send(Request &req, Response &res, Error &error);
   Result send(const Request &req);
 
@@ -8971,6 +8978,30 @@ inline Result ClientImpl::send_(Request &&req) {
 #endif
 }
 
+inline ClientImpl::StreamHandle
+ClientImpl::open_stream(const std::string &path) {
+  return open_stream(path, Headers{});
+}
+
+inline ClientImpl::StreamHandle
+ClientImpl::open_stream(const std::string &path, const Headers &headers) {
+  StreamHandle handle;
+
+  Request req;
+  req.method = "GET";
+  req.path = path;
+  req.headers = headers;
+
+  // Use content_receiver to receive body into response
+  handle.response = detail::make_unique<Response>();
+  handle.error = Error::Success;
+
+  auto ret = send(req, *handle.response, handle.error);
+  if (!ret) { handle.response.reset(); }
+
+  return handle;
+}
+
 inline bool ClientImpl::handle_request(Stream &strm, Request &req,
                                        Response &res, bool close_connection,
                                        Error &error) {
@@ -12181,6 +12212,14 @@ inline Result Client::Options(const std::string &path) {
 }
 inline Result Client::Options(const std::string &path, const Headers &headers) {
   return cli_->Options(path, headers);
+}
+
+inline ClientImpl::StreamHandle Client::open_stream(const std::string &path) {
+  return cli_->open_stream(path);
+}
+inline ClientImpl::StreamHandle Client::open_stream(const std::string &path,
+                                                    const Headers &headers) {
+  return cli_->open_stream(path, headers);
 }
 
 inline bool Client::send(Request &req, Response &res, Error &error) {

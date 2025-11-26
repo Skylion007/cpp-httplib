@@ -43,3 +43,88 @@ TEST(StreamHandleTest, IsValidReturnsTrueWhenValid) {
 
   EXPECT_TRUE(handle.is_valid());
 }
+
+//------------------------------------------------------------------------------
+// Step 2: open_stream() method test
+//------------------------------------------------------------------------------
+
+// Test server for streaming tests
+class StreamingServerTest : public ::testing::Test {
+protected:
+  void SetUp() override {
+    server_.Get("/hello", [](const httplib::Request &, httplib::Response &res) {
+      res.set_content("Hello World!", "text/plain");
+    });
+
+    server_.Get(
+        "/chunked", [](const httplib::Request &, httplib::Response &res) {
+          res.set_chunked_content_provider(
+              "text/plain", [](size_t offset, httplib::DataSink &sink) {
+                if (offset < 3) {
+                  std::string chunk = "chunk" + std::to_string(offset) + "\n";
+                  sink.write(chunk.data(), chunk.size());
+                  return true;
+                }
+                sink.done();
+                return true;
+              });
+        });
+
+    // Start server in a separate thread
+    server_thread_ =
+        std::thread([this]() { server_.listen("localhost", 8787); });
+
+    // Wait for server to start
+    while (!server_.is_running()) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+  }
+
+  void TearDown() override {
+    server_.stop();
+    if (server_thread_.joinable()) { server_thread_.join(); }
+  }
+
+  httplib::Server server_;
+  std::thread server_thread_;
+};
+
+TEST_F(StreamingServerTest, OpenStreamMethodExists) {
+  httplib::Client cli("localhost", 8787);
+
+  // Verify open_stream method exists and returns StreamHandle
+  auto handle = cli.open_stream("/hello");
+
+  // Should be valid for successful request
+  EXPECT_TRUE(handle.is_valid());
+  EXPECT_EQ(200, handle.response->status);
+}
+
+TEST_F(StreamingServerTest, OpenStreamReturnsHeaders) {
+  httplib::Client cli("localhost", 8787);
+
+  auto handle = cli.open_stream("/hello");
+
+  ASSERT_TRUE(handle.is_valid());
+  EXPECT_TRUE(handle.response->has_header("Content-Type"));
+  EXPECT_EQ("text/plain", handle.response->get_header_value("Content-Type"));
+}
+
+TEST_F(StreamingServerTest, OpenStreamWithInvalidPath) {
+  httplib::Client cli("localhost", 8787);
+
+  auto handle = cli.open_stream("/nonexistent");
+
+  // Should still be valid but with 404 status
+  EXPECT_TRUE(handle.is_valid());
+  EXPECT_EQ(404, handle.response->status);
+}
+
+TEST_F(StreamingServerTest, OpenStreamConnectionError) {
+  httplib::Client cli("localhost", 9999); // No server on this port
+
+  auto handle = cli.open_stream("/hello");
+
+  EXPECT_FALSE(handle.is_valid());
+  EXPECT_NE(httplib::Error::Success, handle.error);
+}
