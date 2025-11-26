@@ -585,3 +585,111 @@ TEST(BodyReaderTest, InitializeAsChunked) {
   EXPECT_TRUE(reader.chunked);
   EXPECT_EQ(0u, reader.content_length);
 }
+
+//------------------------------------------------------------------------------
+// Phase 2.3: BodyReader::read() tests
+//------------------------------------------------------------------------------
+
+// Mock stream for testing BodyReader
+class MockStream : public httplib::Stream {
+public:
+  explicit MockStream(const std::string &data) : data_(data), pos_(0) {}
+
+  bool is_readable() const override { return pos_ < data_.size(); }
+  bool wait_readable() const override { return is_readable(); }
+  bool wait_writable() const override { return true; }
+
+  ssize_t read(char *ptr, size_t size) override {
+    if (pos_ >= data_.size()) return 0;
+    size_t to_read = std::min(size, data_.size() - pos_);
+    std::memcpy(ptr, data_.data() + pos_, to_read);
+    pos_ += to_read;
+    return static_cast<ssize_t>(to_read);
+  }
+
+  ssize_t write(const char *, size_t) override { return -1; }
+
+  void get_remote_ip_and_port(std::string &ip, int &port) const override {
+    ip = "127.0.0.1";
+    port = 0;
+  }
+
+  void get_local_ip_and_port(std::string &ip, int &port) const override {
+    ip = "127.0.0.1";
+    port = 0;
+  }
+
+  socket_t socket() const override { return INVALID_SOCKET; }
+  time_t duration() const override { return 0; }
+
+private:
+  std::string data_;
+  size_t pos_;
+};
+
+TEST(BodyReaderTest, ReadWithContentLength) {
+  std::string body = "Hello, World!";
+  MockStream stream(body);
+
+  httplib::detail::BodyReader reader;
+  reader.stream = &stream;
+  reader.content_length = body.size();
+  reader.chunked = false;
+
+  char buf[32];
+  auto n = reader.read(buf, sizeof(buf));
+
+  EXPECT_EQ(static_cast<ssize_t>(body.size()), n);
+  EXPECT_EQ(body, std::string(buf, static_cast<size_t>(n)));
+  EXPECT_EQ(body.size(), reader.bytes_read);
+}
+
+TEST(BodyReaderTest, ReadWithContentLengthPartial) {
+  std::string body = "Hello, World!";
+  MockStream stream(body);
+
+  httplib::detail::BodyReader reader;
+  reader.stream = &stream;
+  reader.content_length = body.size();
+  reader.chunked = false;
+
+  // Read in small chunks
+  char buf[5];
+  std::string result;
+
+  ssize_t n;
+  while ((n = reader.read(buf, sizeof(buf))) > 0) {
+    result.append(buf, static_cast<size_t>(n));
+  }
+
+  EXPECT_EQ(body, result);
+  EXPECT_TRUE(reader.eof);
+}
+
+TEST(BodyReaderTest, ReadReturnsZeroAtEOF) {
+  std::string body = "Hi";
+  MockStream stream(body);
+
+  httplib::detail::BodyReader reader;
+  reader.stream = &stream;
+  reader.content_length = body.size();
+  reader.chunked = false;
+
+  char buf[32];
+  reader.read(buf, sizeof(buf)); // Read all
+
+  // Next read should return 0
+  auto n = reader.read(buf, sizeof(buf));
+  EXPECT_EQ(0, n);
+  EXPECT_TRUE(reader.eof);
+}
+
+TEST(BodyReaderTest, ReadWithoutStream) {
+  httplib::detail::BodyReader reader;
+  reader.stream = nullptr;
+
+  char buf[32];
+  auto n = reader.read(buf, sizeof(buf));
+
+  EXPECT_EQ(-1, n);
+}

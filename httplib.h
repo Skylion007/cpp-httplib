@@ -7177,11 +7177,34 @@ inline ssize_t Stream::write(const std::string &s) {
   return write(s.data(), s.size());
 }
 
-// BodyReader implementation (stub for Phase 2.2, full impl in Phase 2.3)
+// BodyReader implementation
 inline ssize_t detail::BodyReader::read(char *buf, size_t len) {
-  (void)buf;
-  (void)len;
-  // TODO: Implement in Phase 2.3
+  if (!stream) { return -1; }
+  if (eof) { return 0; }
+
+  if (!chunked) {
+    // Content-Length based reading
+    if (bytes_read >= content_length) {
+      eof = true;
+      return 0;
+    }
+
+    auto remaining = content_length - bytes_read;
+    auto to_read = (std::min)(len, remaining);
+    auto n = stream->read(buf, to_read);
+
+    if (n <= 0) {
+      eof = true;
+      return n;
+    }
+
+    bytes_read += static_cast<size_t>(n);
+    if (bytes_read >= content_length) { eof = true; }
+    return n;
+  }
+
+  // TODO: Chunked transfer encoding (Phase 2.3 extension)
+  // For now, return error for chunked
   return -1;
 }
 
