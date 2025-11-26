@@ -7246,9 +7246,54 @@ inline ssize_t detail::BodyReader::read(char *buf, size_t len) {
     return n;
   }
 
-  // TODO: Chunked transfer encoding (Phase 2.3 extension)
-  // For now, return error for chunked
-  return -1;
+  // Chunked transfer encoding
+  // If no data remaining in current chunk, read next chunk header
+  while (current_chunk_remaining == 0) {
+    // Read chunk size line
+    const size_t line_buf_size = 32;
+    char line_buf[line_buf_size];
+    stream_line_reader line_reader(*stream, line_buf, line_buf_size);
+
+    if (!line_reader.getline()) {
+      eof = true;
+      return 0;
+    }
+
+    // Skip empty lines (CRLF between chunks)
+    if (line_reader.size() <= 2 && (strcmp(line_reader.ptr(), "\r\n") == 0 ||
+                                    strcmp(line_reader.ptr(), "\n") == 0)) {
+      continue;
+    }
+
+    // Parse chunk size (hex)
+    char *end_ptr;
+    auto chunk_size = std::strtoul(line_reader.ptr(), &end_ptr, 16);
+    if (end_ptr == line_reader.ptr() || chunk_size == ULONG_MAX) {
+      return -1; // Parse error
+    }
+
+    if (chunk_size == 0) {
+      // Final chunk
+      eof = true;
+      return 0;
+    }
+
+    current_chunk_remaining = chunk_size;
+  }
+
+  // Read from current chunk
+  auto to_read = (std::min)(len, current_chunk_remaining);
+  auto n = stream->read(buf, to_read);
+
+  if (n <= 0) {
+    eof = true;
+    return n;
+  }
+
+  current_chunk_remaining -= static_cast<size_t>(n);
+  bytes_read += static_cast<size_t>(n);
+
+  return n;
 }
 
 namespace detail {

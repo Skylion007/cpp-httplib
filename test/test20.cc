@@ -812,7 +812,8 @@ protected:
     svr_.Get("/chunked", [](const httplib::Request &, httplib::Response &res) {
       res.set_chunked_content_provider(
           "text/plain", [](size_t offset, httplib::DataSink &sink) {
-            if (offset < 3) {
+            // Send "chunk" 3 times (offset 0, 5, 10)
+            if (offset < 15) {
               sink.write("chunk", 5);
               return true;
             }
@@ -896,4 +897,32 @@ TEST_F(OpenStreamDirectTest, ConnectionError) {
 
   EXPECT_FALSE(handle.is_valid());
   EXPECT_NE(httplib::Error::Success, handle.error);
+}
+
+TEST_F(OpenStreamDirectTest, ChunkedResponse) {
+  httplib::Client cli("127.0.0.1", 8787);
+
+  auto handle = cli.open_stream_direct("/chunked");
+  ASSERT_TRUE(handle.is_valid());
+  EXPECT_TRUE(handle.body_reader_.chunked);
+
+  auto body = handle.read_all();
+  // Server sends "chunk" 3 times
+  EXPECT_EQ("chunkchunkchunk", body);
+}
+
+TEST_F(OpenStreamDirectTest, ChunkedResponseInPieces) {
+  httplib::Client cli("127.0.0.1", 8787);
+
+  auto handle = cli.open_stream_direct("/chunked");
+  ASSERT_TRUE(handle.is_valid());
+
+  std::string result;
+  char buf[3]; // Small buffer to force multiple reads
+  ssize_t n;
+  while ((n = handle.read(buf, sizeof(buf))) > 0) {
+    result.append(buf, static_cast<size_t>(n));
+  }
+
+  EXPECT_EQ("chunkchunkchunk", result);
 }
