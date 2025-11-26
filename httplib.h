@@ -1402,7 +1402,25 @@ struct ClientConnection {
 
   // Move-only semantics
   ClientConnection() = default;
-  ~ClientConnection() = default;
+
+  ~ClientConnection() {
+#ifdef CPPHTTPLIB_OPENSSL_SUPPORT
+    if (ssl) {
+      // Non-graceful shutdown to avoid waiting for peer's close_notify
+      // This is acceptable since we're closing the connection anyway
+      SSL_free(ssl);
+      ssl = nullptr;
+    }
+#endif
+    if (sock != INVALID_SOCKET) {
+#ifdef _WIN32
+      closesocket(sock);
+#else
+      close(sock);
+#endif
+      sock = INVALID_SOCKET;
+    }
+  }
 
   ClientConnection(const ClientConnection &) = delete;
   ClientConnection &operator=(const ClientConnection &) = delete;
@@ -1484,6 +1502,21 @@ public:
     std::unique_ptr<Stream> socket_stream_;        // SocketStream ownership
     Stream *stream_ = nullptr;                     // Stream for reading
     detail::BodyReader body_reader_;               // Body reading state
+
+    // Default constructor
+    StreamHandle() = default;
+
+    // Move-only semantics (non-copyable due to unique_ptr members)
+    StreamHandle(const StreamHandle &) = delete;
+    StreamHandle &operator=(const StreamHandle &) = delete;
+    StreamHandle(StreamHandle &&) = default;
+    StreamHandle &operator=(StreamHandle &&) = default;
+
+    // Destructor: Cleans up socket connection.
+    // In socket direct mode, if the body was not fully read, remaining data
+    // is discarded and the connection is closed (cannot be reused).
+    // This is safe but may leave unread data in the socket buffer.
+    ~StreamHandle() = default;
 
     bool is_valid() const {
       return response != nullptr && error == Error::Success;
@@ -9235,6 +9268,13 @@ ClientImpl::open_stream_direct(const std::string &path,
     auto is_alive = false;
     if (socket_.is_open()) {
       is_alive = detail::is_socket_alive(socket_.sock);
+#ifdef CPPHTTPLIB_OPENSSL_SUPPORT
+      if (is_alive && is_ssl()) {
+        if (detail::is_ssl_peer_could_be_closed(socket_.ssl, socket_.sock)) {
+          is_alive = false;
+        }
+      }
+#endif
       if (!is_alive) {
         shutdown_ssl(socket_, false);
         shutdown_socket(socket_);
@@ -9247,6 +9287,17 @@ ClientImpl::open_stream_direct(const std::string &path,
         handle.response.reset();
         return handle;
       }
+
+#ifdef CPPHTTPLIB_OPENSSL_SUPPORT
+      // Initialize SSL for SSL clients
+      if (is_ssl()) {
+        auto &scli = static_cast<SSLClient &>(*this);
+        if (!scli.initialize_ssl(socket_, handle.error)) {
+          handle.response.reset();
+          return handle;
+        }
+      }
+#endif
     }
 
     // Transfer socket ownership to StreamHandle
@@ -9258,10 +9309,22 @@ ClientImpl::open_stream_direct(const std::string &path,
     socket_.sock = INVALID_SOCKET;
   }
 
-  // Create SocketStream for the transferred socket
+  // Create appropriate stream for the transferred socket
+#ifdef CPPHTTPLIB_OPENSSL_SUPPORT
+  if (is_ssl() && handle.connection_->ssl) {
+    handle.socket_stream_ = detail::make_unique<detail::SSLSocketStream>(
+        handle.connection_->sock, handle.connection_->ssl, read_timeout_sec_,
+        read_timeout_usec_, write_timeout_sec_, write_timeout_usec_);
+  } else {
+    handle.socket_stream_ = detail::make_unique<detail::SocketStream>(
+        handle.connection_->sock, read_timeout_sec_, read_timeout_usec_,
+        write_timeout_sec_, write_timeout_usec_);
+  }
+#else
   handle.socket_stream_ = detail::make_unique<detail::SocketStream>(
       handle.connection_->sock, read_timeout_sec_, read_timeout_usec_,
       write_timeout_sec_, write_timeout_usec_);
+#endif
   handle.stream_ = handle.socket_stream_.get();
 
   // Build and send request

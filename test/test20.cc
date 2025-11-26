@@ -530,6 +530,9 @@ TEST(ClientConnectionTest, IsOpenReturnsTrueWhenSocketValid) {
   conn.sock = 1; // Fake valid socket
 
   EXPECT_TRUE(conn.is_open());
+
+  // Reset to avoid closing invalid socket in destructor
+  conn.sock = INVALID_SOCKET;
 }
 
 TEST(ClientConnectionTest, MoveConstructor) {
@@ -540,6 +543,9 @@ TEST(ClientConnectionTest, MoveConstructor) {
 
   EXPECT_EQ(42, conn2.sock);
   EXPECT_EQ(INVALID_SOCKET, conn1.sock); // Moved-from state
+
+  // Reset to avoid closing invalid socket in destructor
+  conn2.sock = INVALID_SOCKET;
 }
 
 TEST(ClientConnectionTest, MoveAssignment) {
@@ -551,6 +557,9 @@ TEST(ClientConnectionTest, MoveAssignment) {
 
   EXPECT_EQ(42, conn2.sock);
   EXPECT_EQ(INVALID_SOCKET, conn1.sock); // Moved-from state
+
+  // Reset to avoid closing invalid socket in destructor
+  conn2.sock = INVALID_SOCKET;
 }
 
 //------------------------------------------------------------------------------
@@ -926,3 +935,70 @@ TEST_F(OpenStreamDirectTest, ChunkedResponseInPieces) {
 
   EXPECT_EQ("chunkchunkchunk", result);
 }
+
+// =============================================================================
+// Phase 2.7: SSL Support Tests
+// =============================================================================
+
+#ifdef CPPHTTPLIB_OPENSSL_SUPPORT
+class SSLOpenStreamDirectTest : public ::testing::Test {
+protected:
+  SSLOpenStreamDirectTest() : svr_("cert.pem", "key.pem") {}
+
+  void SetUp() override {
+    svr_.Get("/hello", [](const httplib::Request &, httplib::Response &res) {
+      res.set_content("Hello SSL World!", "text/plain");
+    });
+
+    svr_.Get("/chunked", [](const httplib::Request &, httplib::Response &res) {
+      res.set_chunked_content_provider(
+          "text/plain", [](size_t offset, httplib::DataSink &sink) {
+            if (offset < 15) {
+              sink.write("chunk", 5);
+              return true;
+            }
+            sink.done();
+            return true;
+          });
+    });
+
+    thread_ = std::thread([this]() { svr_.listen("127.0.0.1", 8788); });
+    svr_.wait_until_ready();
+  }
+
+  void TearDown() override {
+    svr_.stop();
+    if (thread_.joinable()) { thread_.join(); }
+  }
+
+  httplib::SSLServer svr_;
+  std::thread thread_;
+};
+
+TEST_F(SSLOpenStreamDirectTest, BasicSSLStream) {
+  httplib::SSLClient cli("127.0.0.1", 8788);
+  cli.enable_server_certificate_verification(false);
+
+  auto handle = cli.open_stream_direct("/hello");
+
+  ASSERT_TRUE(handle.is_valid());
+  EXPECT_EQ(200, handle.response->status);
+  EXPECT_TRUE(handle.is_socket_direct_mode());
+
+  auto body = handle.read_all();
+  EXPECT_EQ("Hello SSL World!", body);
+}
+
+TEST_F(SSLOpenStreamDirectTest, SSLChunkedResponse) {
+  httplib::SSLClient cli("127.0.0.1", 8788);
+  cli.enable_server_certificate_verification(false);
+
+  auto handle = cli.open_stream_direct("/chunked");
+
+  ASSERT_TRUE(handle.is_valid());
+  EXPECT_TRUE(handle.body_reader_.chunked);
+
+  auto body = handle.read_all();
+  EXPECT_EQ("chunkchunkchunk", body);
+}
+#endif
