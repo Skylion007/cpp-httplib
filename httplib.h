@@ -1478,6 +1478,9 @@ struct BodyReader {
   bool has_error() const { return last_error != Error::Success; }
 };
 
+// Forward declaration for compression support in StreamHandle
+class decompressor;
+
 } // namespace detail
 
 class ClientImpl {
@@ -1509,6 +1512,11 @@ public:
     Stream *stream_ = nullptr;                     // Stream for reading
     detail::BodyReader body_reader_;               // Body reading state
 
+    // Compression support
+    std::unique_ptr<detail::decompressor> decompressor_;
+    std::string decompress_buffer_; // Buffer for decompressed data
+    size_t decompress_offset_ = 0;  // Read position in decompress_buffer_
+
     // Default constructor
     StreamHandle() = default;
 
@@ -1532,35 +1540,25 @@ public:
     bool is_socket_direct_mode() const { return stream_ != nullptr; }
 
     // Read up to len bytes into buf, returns number of bytes read (0 at EOF)
-    ssize_t read(char *buf, size_t len) {
-      if (!is_valid() || !response) { return -1; }
+    // Implementation is below decompressor class definition
+    ssize_t read(char *buf, size_t len);
 
-      if (is_socket_direct_mode()) {
-        // Socket direct mode: read from stream via BodyReader
-        return body_reader_.read(buf, len);
-      } else {
-        // Memory buffer mode: read from pre-loaded response body
-        const auto &body = response->body;
-        if (read_offset_ >= body.size()) { return 0; }
+  private:
+    // Read with decompression support (implemented after decompressor class)
+    ssize_t read_with_decompression(char *buf, size_t len);
 
-        auto remaining = body.size() - read_offset_;
-        auto to_read = (std::min)(len, remaining);
-        std::memcpy(buf, body.data() + read_offset_, to_read);
-        read_offset_ += to_read;
-        return static_cast<ssize_t>(to_read);
-      }
-    }
-
+  public:
     // Read all remaining content into a string
     std::string read_all() {
       if (!is_valid() || !response) { return {}; }
 
       if (is_socket_direct_mode()) {
-        // Socket direct mode: read all from stream
+        // Socket direct mode: read all from stream (uses read() for
+        // decompression)
         std::string result;
         char buf[8192];
         ssize_t n;
-        while ((n = body_reader_.read(buf, sizeof(buf))) > 0) {
+        while ((n = read(buf, sizeof(buf))) > 0) {
           result.append(buf, static_cast<size_t>(n));
         }
         return result;
@@ -2945,6 +2943,75 @@ inline bool is_field_value(const std::string &s) { return is_field_content(s); }
 } // namespace fields
 
 } // namespace detail
+
+// ----------------------------------------------------------------------------
+// StreamHandle method implementations (after decompressor class definition)
+// ----------------------------------------------------------------------------
+
+inline ssize_t ClientImpl::StreamHandle::read(char *buf, size_t len) {
+  if (!is_valid() || !response) { return -1; }
+
+  if (is_socket_direct_mode()) {
+    // Socket direct mode: read from stream via BodyReader
+    if (decompressor_) { return read_with_decompression(buf, len); }
+    return body_reader_.read(buf, len);
+  } else {
+    // Memory buffer mode: read from pre-loaded response body
+    const auto &body = response->body;
+    if (read_offset_ >= body.size()) { return 0; }
+
+    auto remaining = body.size() - read_offset_;
+    auto to_read = (std::min)(len, remaining);
+    std::memcpy(buf, body.data() + read_offset_, to_read);
+    read_offset_ += to_read;
+    return static_cast<ssize_t>(to_read);
+  }
+}
+
+inline ssize_t ClientImpl::StreamHandle::read_with_decompression(char *buf,
+                                                                 size_t len) {
+  // First, return any buffered decompressed data
+  if (decompress_offset_ < decompress_buffer_.size()) {
+    auto available = decompress_buffer_.size() - decompress_offset_;
+    auto to_copy = (std::min)(len, available);
+    std::memcpy(buf, decompress_buffer_.data() + decompress_offset_, to_copy);
+    decompress_offset_ += to_copy;
+    return static_cast<ssize_t>(to_copy);
+  }
+
+  // Buffer exhausted, read more compressed data and decompress
+  decompress_buffer_.clear();
+  decompress_offset_ = 0;
+
+  char compressed_buf[8192];
+  auto n = body_reader_.read(compressed_buf, sizeof(compressed_buf));
+
+  if (n <= 0) { return n; } // EOF or error
+
+  // Decompress the data
+  bool decompress_ok =
+      decompressor_->decompress(compressed_buf, static_cast<size_t>(n),
+                                [this](const char *data, size_t data_len) {
+                                  decompress_buffer_.append(data, data_len);
+                                  return true;
+                                });
+
+  if (!decompress_ok) {
+    body_reader_.last_error = Error::Read;
+    return -1;
+  }
+
+  if (decompress_buffer_.empty()) {
+    // Decompressor needs more data, try again
+    return read_with_decompression(buf, len);
+  }
+
+  // Return from the newly decompressed buffer
+  auto to_copy = (std::min)(len, decompress_buffer_.size());
+  std::memcpy(buf, decompress_buffer_.data(), to_copy);
+  decompress_offset_ = to_copy;
+  return static_cast<ssize_t>(to_copy);
+}
 
 // ----------------------------------------------------------------------------
 
@@ -9418,6 +9485,30 @@ ClientImpl::open_stream_direct(const std::string &path,
   auto transfer_encoding =
       handle.response->get_header_value("Transfer-Encoding");
   handle.body_reader_.chunked = (transfer_encoding == "chunked");
+
+  // Set up decompressor based on Content-Encoding
+  auto content_encoding = handle.response->get_header_value("Content-Encoding");
+  if (!content_encoding.empty()) {
+#ifdef CPPHTTPLIB_ZLIB_SUPPORT
+    if (content_encoding == "gzip" || content_encoding == "deflate") {
+      handle.decompressor_ = detail::make_unique<detail::gzip_decompressor>();
+    } else
+#endif
+#ifdef CPPHTTPLIB_BROTLI_SUPPORT
+        if (content_encoding == "br") {
+      handle.decompressor_ = detail::make_unique<detail::brotli_decompressor>();
+    } else
+#endif
+#ifdef CPPHTTPLIB_ZSTD_SUPPORT
+        if (content_encoding == "zstd") {
+      handle.decompressor_ = detail::make_unique<detail::zstd_decompressor>();
+    } else
+#endif
+    {
+      // Unsupported encoding - leave decompressor_ null
+      // Data will be returned as-is (compressed)
+    }
+  }
 
   return handle;
 }

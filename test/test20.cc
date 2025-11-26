@@ -973,6 +973,52 @@ protected:
           });
     });
 
+    // Endpoint that returns gzip-compressed chunked content
+    // Server automatically compresses chunked responses when client accepts
+    svr_.Get(
+        "/gzip-chunked", [](const httplib::Request &, httplib::Response &res) {
+          res.set_chunked_content_provider(
+              "text/plain", [](size_t /*offset*/, httplib::DataSink &sink) {
+                sink.os << "This is ";
+                sink.os << "gzip compressed ";
+                sink.os << "chunked data!";
+                sink.done();
+                return true;
+              });
+        });
+
+    // Large compressible data endpoint for testing compression efficiency
+    // Repetitive text compresses very well (e.g., 100KB -> ~1KB)
+    svr_.Get("/large-compressible",
+             [](const httplib::Request &, httplib::Response &res) {
+               res.set_chunked_content_provider(
+                   "text/plain", [](size_t offset, httplib::DataSink &sink) {
+                     // Generate 100KB of repetitive compressible data
+                     const size_t total_size = 100 * 1024;
+                     const size_t chunk_size = 8192;
+
+                     if (offset < total_size) {
+                       std::string chunk;
+                       size_t remaining = total_size - offset;
+                       size_t to_write = std::min(chunk_size, remaining);
+
+                       // Repetitive pattern: "Line NNNNNN: Hello World!\n"
+                       while (chunk.size() < to_write) {
+                         size_t line_num = (offset + chunk.size()) / 28;
+                         char line[32];
+                         snprintf(line, sizeof(line),
+                                  "Line %06zu: Hello World!\n", line_num);
+                         chunk += line;
+                       }
+                       chunk.resize(to_write);
+                       sink.write(chunk.data(), chunk.size());
+                       return true;
+                     }
+                     sink.done();
+                     return true;
+                   });
+             });
+
     thread_ = std::thread([this]() { svr_.listen("127.0.0.1", 8787); });
     svr_.wait_until_ready();
   }
@@ -1077,6 +1123,248 @@ TEST_F(OpenStreamDirectTest, ChunkedResponseInPieces) {
 
   EXPECT_EQ("chunkchunkchunk", result);
 }
+
+// =============================================================================
+// Phase 2.9: Compression Support Tests
+// =============================================================================
+
+#ifdef CPPHTTPLIB_ZLIB_SUPPORT
+TEST_F(OpenStreamDirectTest, GzipCompressedResponse) {
+  httplib::Client cli("127.0.0.1", 8787);
+
+  // Request with Accept-Encoding header to trigger server compression
+  httplib::Headers headers;
+  headers.emplace("Accept-Encoding", "gzip, deflate");
+
+  auto handle = cli.open_stream_direct("/gzip-chunked", headers);
+  ASSERT_TRUE(handle.is_valid());
+  EXPECT_EQ(200, handle.response->status);
+
+  // Check Content-Encoding header - server should compress chunked response
+  auto encoding = handle.response->get_header_value("Content-Encoding");
+  EXPECT_EQ("gzip", encoding);
+
+  // Decompressor should be set up
+  EXPECT_TRUE(handle.decompressor_ != nullptr);
+
+  auto body = handle.read_all();
+  EXPECT_EQ("This is gzip compressed chunked data!", body);
+}
+
+TEST_F(OpenStreamDirectTest, GzipCompressedResponseInChunks) {
+  httplib::Client cli("127.0.0.1", 8787);
+
+  httplib::Headers headers;
+  headers.emplace("Accept-Encoding", "gzip, deflate");
+
+  auto handle = cli.open_stream_direct("/gzip-chunked", headers);
+  ASSERT_TRUE(handle.is_valid());
+
+  std::string result;
+  char buf[8]; // Small buffer to force multiple reads
+  ssize_t n;
+  while ((n = handle.read(buf, sizeof(buf))) > 0) {
+    result.append(buf, static_cast<size_t>(n));
+  }
+
+  EXPECT_EQ("This is gzip compressed chunked data!", result);
+}
+
+TEST_F(OpenStreamDirectTest, NoCompressionWhenNotRequested) {
+  httplib::Client cli("127.0.0.1", 8787);
+  // No Accept-Encoding header - compression disabled
+
+  auto handle = cli.open_stream_direct("/gzip-chunked");
+  ASSERT_TRUE(handle.is_valid());
+
+  // Should not have Content-Encoding since we didn't request compression
+  auto encoding = handle.response->get_header_value("Content-Encoding");
+  EXPECT_TRUE(encoding.empty());
+
+  // Should not have decompressor
+  EXPECT_TRUE(handle.decompressor_ == nullptr);
+
+  auto body = handle.read_all();
+  EXPECT_EQ("This is gzip compressed chunked data!", body);
+}
+#endif // CPPHTTPLIB_ZLIB_SUPPORT
+
+#ifdef CPPHTTPLIB_BROTLI_SUPPORT
+TEST_F(OpenStreamDirectTest, BrotliCompressedResponse) {
+  httplib::Client cli("127.0.0.1", 8787);
+
+  // Request with Accept-Encoding: br to trigger brotli compression
+  httplib::Headers headers;
+  headers.emplace("Accept-Encoding", "br");
+
+  auto handle = cli.open_stream_direct("/gzip-chunked", headers);
+  ASSERT_TRUE(handle.is_valid());
+  EXPECT_EQ(200, handle.response->status);
+
+  // Check Content-Encoding header
+  auto encoding = handle.response->get_header_value("Content-Encoding");
+  EXPECT_EQ("br", encoding);
+
+  // Decompressor should be set up
+  EXPECT_TRUE(handle.decompressor_ != nullptr);
+
+  auto body = handle.read_all();
+  EXPECT_EQ("This is gzip compressed chunked data!", body);
+}
+
+TEST_F(OpenStreamDirectTest, BrotliCompressedResponseInChunks) {
+  httplib::Client cli("127.0.0.1", 8787);
+
+  httplib::Headers headers;
+  headers.emplace("Accept-Encoding", "br");
+
+  auto handle = cli.open_stream_direct("/gzip-chunked", headers);
+  ASSERT_TRUE(handle.is_valid());
+
+  std::string result;
+  char buf[8]; // Small buffer to force multiple reads
+  ssize_t n;
+  while ((n = handle.read(buf, sizeof(buf))) > 0) {
+    result.append(buf, static_cast<size_t>(n));
+  }
+
+  EXPECT_EQ("This is gzip compressed chunked data!", result);
+}
+#endif // CPPHTTPLIB_BROTLI_SUPPORT
+
+#ifdef CPPHTTPLIB_ZSTD_SUPPORT
+TEST_F(OpenStreamDirectTest, ZstdCompressedResponse) {
+  httplib::Client cli("127.0.0.1", 8787);
+
+  // Request with Accept-Encoding: zstd to trigger zstd compression
+  httplib::Headers headers;
+  headers.emplace("Accept-Encoding", "zstd");
+
+  auto handle = cli.open_stream_direct("/gzip-chunked", headers);
+  ASSERT_TRUE(handle.is_valid());
+  EXPECT_EQ(200, handle.response->status);
+
+  // Check Content-Encoding header
+  auto encoding = handle.response->get_header_value("Content-Encoding");
+  EXPECT_EQ("zstd", encoding);
+
+  // Decompressor should be set up
+  EXPECT_TRUE(handle.decompressor_ != nullptr);
+
+  auto body = handle.read_all();
+  EXPECT_EQ("This is gzip compressed chunked data!", body);
+}
+
+TEST_F(OpenStreamDirectTest, ZstdCompressedResponseInChunks) {
+  httplib::Client cli("127.0.0.1", 8787);
+
+  httplib::Headers headers;
+  headers.emplace("Accept-Encoding", "zstd");
+
+  auto handle = cli.open_stream_direct("/gzip-chunked", headers);
+  ASSERT_TRUE(handle.is_valid());
+
+  std::string result;
+  char buf[8]; // Small buffer to force multiple reads
+  ssize_t n;
+  while ((n = handle.read(buf, sizeof(buf))) > 0) {
+    result.append(buf, static_cast<size_t>(n));
+  }
+
+  EXPECT_EQ("This is gzip compressed chunked data!", result);
+}
+#endif // CPPHTTPLIB_ZSTD_SUPPORT
+
+// Large compressible data tests - tests that compression works efficiently
+// with larger data that has high compression ratio
+#ifdef CPPHTTPLIB_ZLIB_SUPPORT
+TEST_F(OpenStreamDirectTest, LargeGzipCompressedResponse) {
+  httplib::Client cli("127.0.0.1", 8787);
+
+  httplib::Headers headers;
+  headers.emplace("Accept-Encoding", "gzip, deflate");
+
+  auto handle = cli.open_stream_direct("/large-compressible", headers);
+  ASSERT_TRUE(handle.is_valid());
+  EXPECT_EQ(200, handle.response->status);
+
+  // Should be compressed
+  auto encoding = handle.response->get_header_value("Content-Encoding");
+  EXPECT_EQ("gzip", encoding);
+  EXPECT_TRUE(handle.decompressor_ != nullptr);
+
+  // Read and decompress 100KB of data
+  auto body = handle.read_all();
+  EXPECT_EQ(100 * 1024, body.size());
+
+  // Verify content pattern
+  EXPECT_TRUE(body.find("Line 000000: Hello World!") != std::string::npos);
+  EXPECT_TRUE(body.find("Line 003000: Hello World!") != std::string::npos);
+}
+
+TEST_F(OpenStreamDirectTest, LargeGzipInChunksSmallBuffer) {
+  httplib::Client cli("127.0.0.1", 8787);
+
+  httplib::Headers headers;
+  headers.emplace("Accept-Encoding", "gzip, deflate");
+
+  auto handle = cli.open_stream_direct("/large-compressible", headers);
+  ASSERT_TRUE(handle.is_valid());
+
+  // Read with very small buffer to stress decompression buffering
+  std::string result;
+  char buf[64];
+  ssize_t n;
+  while ((n = handle.read(buf, sizeof(buf))) > 0) {
+    result.append(buf, static_cast<size_t>(n));
+  }
+
+  EXPECT_EQ(100 * 1024, result.size());
+  EXPECT_TRUE(result.find("Line 000000: Hello World!") != std::string::npos);
+}
+#endif // CPPHTTPLIB_ZLIB_SUPPORT
+
+#ifdef CPPHTTPLIB_BROTLI_SUPPORT
+TEST_F(OpenStreamDirectTest, LargeBrotliCompressedResponse) {
+  httplib::Client cli("127.0.0.1", 8787);
+
+  httplib::Headers headers;
+  headers.emplace("Accept-Encoding", "br");
+
+  auto handle = cli.open_stream_direct("/large-compressible", headers);
+  ASSERT_TRUE(handle.is_valid());
+  EXPECT_EQ(200, handle.response->status);
+
+  auto encoding = handle.response->get_header_value("Content-Encoding");
+  EXPECT_EQ("br", encoding);
+  EXPECT_TRUE(handle.decompressor_ != nullptr);
+
+  auto body = handle.read_all();
+  EXPECT_EQ(100 * 1024, body.size());
+  EXPECT_TRUE(body.find("Line 000000: Hello World!") != std::string::npos);
+}
+#endif // CPPHTTPLIB_BROTLI_SUPPORT
+
+#ifdef CPPHTTPLIB_ZSTD_SUPPORT
+TEST_F(OpenStreamDirectTest, LargeZstdCompressedResponse) {
+  httplib::Client cli("127.0.0.1", 8787);
+
+  httplib::Headers headers;
+  headers.emplace("Accept-Encoding", "zstd");
+
+  auto handle = cli.open_stream_direct("/large-compressible", headers);
+  ASSERT_TRUE(handle.is_valid());
+  EXPECT_EQ(200, handle.response->status);
+
+  auto encoding = handle.response->get_header_value("Content-Encoding");
+  EXPECT_EQ("zstd", encoding);
+  EXPECT_TRUE(handle.decompressor_ != nullptr);
+
+  auto body = handle.read_all();
+  EXPECT_EQ(100 * 1024, body.size());
+  EXPECT_TRUE(body.find("Line 000000: Hello World!") != std::string::npos);
+}
+#endif // CPPHTTPLIB_ZSTD_SUPPORT
 
 // =============================================================================
 // Phase 2.7: SSL Support Tests
