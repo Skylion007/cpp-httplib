@@ -3472,6 +3472,23 @@ struct ClientConnection {
   }
 };
 
+// BodyReader: Manages incremental reading of HTTP response body
+// Supports both Content-Length and chunked transfer encoding
+struct BodyReader {
+  Stream *stream = nullptr;
+  size_t content_length = 0;
+  size_t bytes_read = 0;
+  bool chunked = false;
+  bool eof = false;
+
+  // For chunked encoding
+  size_t current_chunk_remaining = 0;
+
+  // Read up to len bytes into buf
+  // Returns bytes read, 0 on EOF, -1 on error
+  ssize_t read(char *buf, size_t len);
+};
+
 class SocketStream final : public Stream {
 public:
   SocketStream(socket_t sock, time_t read_timeout_sec, time_t read_timeout_usec,
@@ -7158,6 +7175,14 @@ inline ssize_t Stream::write(const char *ptr) {
 
 inline ssize_t Stream::write(const std::string &s) {
   return write(s.data(), s.size());
+}
+
+// BodyReader implementation (stub for Phase 2.2, full impl in Phase 2.3)
+inline ssize_t detail::BodyReader::read(char *buf, size_t len) {
+  (void)buf;
+  (void)len;
+  // TODO: Implement in Phase 2.3
+  return -1;
 }
 
 namespace detail {

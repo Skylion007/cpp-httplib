@@ -552,3 +552,36 @@ TEST(ClientConnectionTest, MoveAssignment) {
   EXPECT_EQ(42, conn2.sock);
   EXPECT_EQ(INVALID_SOCKET, conn1.sock); // Moved-from state
 }
+
+//------------------------------------------------------------------------------
+// Phase 2.2: BodyReader struct tests
+//------------------------------------------------------------------------------
+
+TEST(BodyReaderTest, StructExists) {
+  // Verify BodyReader struct is defined
+  httplib::detail::BodyReader reader;
+
+  // Check default state
+  EXPECT_EQ(nullptr, reader.stream);
+  EXPECT_EQ(0u, reader.content_length);
+  EXPECT_EQ(0u, reader.bytes_read);
+  EXPECT_FALSE(reader.chunked);
+  EXPECT_FALSE(reader.eof);
+}
+
+TEST(BodyReaderTest, InitializeWithContentLength) {
+  httplib::detail::BodyReader reader;
+  reader.content_length = 1024;
+  reader.chunked = false;
+
+  EXPECT_EQ(1024u, reader.content_length);
+  EXPECT_FALSE(reader.chunked);
+}
+
+TEST(BodyReaderTest, InitializeAsChunked) {
+  httplib::detail::BodyReader reader;
+  reader.chunked = true;
+
+  EXPECT_TRUE(reader.chunked);
+  EXPECT_EQ(0u, reader.content_length);
+}
