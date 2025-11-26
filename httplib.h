@@ -1674,13 +1674,9 @@ public:
   // clang-format on
 
   // Streaming API: Open a stream for reading response body incrementally
+  // Socket ownership is transferred to StreamHandle for true streaming
   StreamHandle open_stream(const std::string &path);
   StreamHandle open_stream(const std::string &path, const Headers &headers);
-
-  // True streaming API: Socket ownership transferred to StreamHandle
-  StreamHandle open_stream_direct(const std::string &path);
-  StreamHandle open_stream_direct(const std::string &path,
-                                  const Headers &headers);
 
   bool send(Request &req, Response &res, Error &error);
   Result send(const Request &req);
@@ -2051,14 +2047,10 @@ public:
   // clang-format on
 
   // Streaming API: Open a stream for reading response body incrementally
+  // Socket ownership is transferred to StreamHandle for true streaming
   ClientImpl::StreamHandle open_stream(const std::string &path);
   ClientImpl::StreamHandle open_stream(const std::string &path,
                                        const Headers &headers);
-
-  // True streaming API: Socket ownership transferred to StreamHandle
-  ClientImpl::StreamHandle open_stream_direct(const std::string &path);
-  ClientImpl::StreamHandle open_stream_direct(const std::string &path,
-                                              const Headers &headers);
 
   bool send(Request &req, Response &res, Error &error);
   Result send(const Request &req);
@@ -9328,31 +9320,6 @@ ClientImpl::open_stream(const std::string &path) {
 inline ClientImpl::StreamHandle
 ClientImpl::open_stream(const std::string &path, const Headers &headers) {
   StreamHandle handle;
-
-  Request req;
-  req.method = "GET";
-  req.path = path;
-  req.headers = headers;
-
-  // Use content_receiver to receive body into response
-  handle.response = detail::make_unique<Response>();
-  handle.error = Error::Success;
-
-  auto ret = send(req, *handle.response, handle.error);
-  if (!ret) { handle.response.reset(); }
-
-  return handle;
-}
-
-inline ClientImpl::StreamHandle
-ClientImpl::open_stream_direct(const std::string &path) {
-  return open_stream_direct(path, Headers{});
-}
-
-inline ClientImpl::StreamHandle
-ClientImpl::open_stream_direct(const std::string &path,
-                               const Headers &headers) {
-  StreamHandle handle;
   handle.response = detail::make_unique<Response>();
   handle.error = Error::Success;
 
@@ -12731,15 +12698,6 @@ inline ClientImpl::StreamHandle Client::open_stream(const std::string &path) {
 inline ClientImpl::StreamHandle Client::open_stream(const std::string &path,
                                                     const Headers &headers) {
   return cli_->open_stream(path, headers);
-}
-
-inline ClientImpl::StreamHandle
-Client::open_stream_direct(const std::string &path) {
-  return cli_->open_stream_direct(path);
-}
-inline ClientImpl::StreamHandle
-Client::open_stream_direct(const std::string &path, const Headers &headers) {
-  return cli_->open_stream_direct(path, headers);
 }
 
 inline bool Client::send(Request &req, Response &res, Error &error) {

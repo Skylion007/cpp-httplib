@@ -944,7 +944,7 @@ TEST_F(StreamHandleV2Test, GetReadErrorAfterReadFailure) {
 }
 
 // =============================================================================
-// Phase 2.5: open_stream_direct() Tests (True Streaming)
+// Phase 2.5: open_stream() Tests (True Streaming)
 // =============================================================================
 
 class OpenStreamDirectTest : public ::testing::Test {
@@ -1035,7 +1035,7 @@ protected:
 TEST_F(OpenStreamDirectTest, MethodExists) {
   httplib::Client cli("127.0.0.1", 8787);
 
-  auto handle = cli.open_stream_direct("/hello");
+  auto handle = cli.open_stream("/hello");
 
   EXPECT_TRUE(handle.is_valid());
   EXPECT_EQ(200, handle.response->status);
@@ -1044,7 +1044,7 @@ TEST_F(OpenStreamDirectTest, MethodExists) {
 TEST_F(OpenStreamDirectTest, IsSocketDirectMode) {
   httplib::Client cli("127.0.0.1", 8787);
 
-  auto handle = cli.open_stream_direct("/hello");
+  auto handle = cli.open_stream("/hello");
 
   EXPECT_TRUE(handle.is_valid());
   EXPECT_TRUE(handle.is_socket_direct_mode());
@@ -1053,7 +1053,7 @@ TEST_F(OpenStreamDirectTest, IsSocketDirectMode) {
 TEST_F(OpenStreamDirectTest, ReadBody) {
   httplib::Client cli("127.0.0.1", 8787);
 
-  auto handle = cli.open_stream_direct("/hello");
+  auto handle = cli.open_stream("/hello");
   ASSERT_TRUE(handle.is_valid());
 
   auto body = handle.read_all();
@@ -1063,7 +1063,7 @@ TEST_F(OpenStreamDirectTest, ReadBody) {
 TEST_F(OpenStreamDirectTest, ReadBodyInChunks) {
   httplib::Client cli("127.0.0.1", 8787);
 
-  auto handle = cli.open_stream_direct("/hello");
+  auto handle = cli.open_stream("/hello");
   ASSERT_TRUE(handle.is_valid());
 
   std::string result;
@@ -1079,7 +1079,7 @@ TEST_F(OpenStreamDirectTest, ReadBodyInChunks) {
 TEST_F(OpenStreamDirectTest, LargeResponse) {
   httplib::Client cli("127.0.0.1", 8787);
 
-  auto handle = cli.open_stream_direct("/large");
+  auto handle = cli.open_stream("/large");
   ASSERT_TRUE(handle.is_valid());
 
   auto body = handle.read_all();
@@ -1090,7 +1090,7 @@ TEST_F(OpenStreamDirectTest, LargeResponse) {
 TEST_F(OpenStreamDirectTest, ConnectionError) {
   httplib::Client cli("127.0.0.1", 9999); // Wrong port
 
-  auto handle = cli.open_stream_direct("/hello");
+  auto handle = cli.open_stream("/hello");
 
   EXPECT_FALSE(handle.is_valid());
   EXPECT_NE(httplib::Error::Success, handle.error);
@@ -1099,7 +1099,7 @@ TEST_F(OpenStreamDirectTest, ConnectionError) {
 TEST_F(OpenStreamDirectTest, ChunkedResponse) {
   httplib::Client cli("127.0.0.1", 8787);
 
-  auto handle = cli.open_stream_direct("/chunked");
+  auto handle = cli.open_stream("/chunked");
   ASSERT_TRUE(handle.is_valid());
   EXPECT_TRUE(handle.body_reader_.chunked);
 
@@ -1111,7 +1111,7 @@ TEST_F(OpenStreamDirectTest, ChunkedResponse) {
 TEST_F(OpenStreamDirectTest, ChunkedResponseInPieces) {
   httplib::Client cli("127.0.0.1", 8787);
 
-  auto handle = cli.open_stream_direct("/chunked");
+  auto handle = cli.open_stream("/chunked");
   ASSERT_TRUE(handle.is_valid());
 
   std::string result;
@@ -1136,7 +1136,7 @@ TEST_F(OpenStreamDirectTest, GzipCompressedResponse) {
   httplib::Headers headers;
   headers.emplace("Accept-Encoding", "gzip, deflate");
 
-  auto handle = cli.open_stream_direct("/gzip-chunked", headers);
+  auto handle = cli.open_stream("/gzip-chunked", headers);
   ASSERT_TRUE(handle.is_valid());
   EXPECT_EQ(200, handle.response->status);
 
@@ -1157,7 +1157,7 @@ TEST_F(OpenStreamDirectTest, GzipCompressedResponseInChunks) {
   httplib::Headers headers;
   headers.emplace("Accept-Encoding", "gzip, deflate");
 
-  auto handle = cli.open_stream_direct("/gzip-chunked", headers);
+  auto handle = cli.open_stream("/gzip-chunked", headers);
   ASSERT_TRUE(handle.is_valid());
 
   std::string result;
@@ -1174,7 +1174,7 @@ TEST_F(OpenStreamDirectTest, NoCompressionWhenNotRequested) {
   httplib::Client cli("127.0.0.1", 8787);
   // No Accept-Encoding header - compression disabled
 
-  auto handle = cli.open_stream_direct("/gzip-chunked");
+  auto handle = cli.open_stream("/gzip-chunked");
   ASSERT_TRUE(handle.is_valid());
 
   // Should not have Content-Encoding since we didn't request compression
@@ -1197,7 +1197,7 @@ TEST_F(OpenStreamDirectTest, BrotliCompressedResponse) {
   httplib::Headers headers;
   headers.emplace("Accept-Encoding", "br");
 
-  auto handle = cli.open_stream_direct("/gzip-chunked", headers);
+  auto handle = cli.open_stream("/gzip-chunked", headers);
   ASSERT_TRUE(handle.is_valid());
   EXPECT_EQ(200, handle.response->status);
 
@@ -1218,7 +1218,7 @@ TEST_F(OpenStreamDirectTest, BrotliCompressedResponseInChunks) {
   httplib::Headers headers;
   headers.emplace("Accept-Encoding", "br");
 
-  auto handle = cli.open_stream_direct("/gzip-chunked", headers);
+  auto handle = cli.open_stream("/gzip-chunked", headers);
   ASSERT_TRUE(handle.is_valid());
 
   std::string result;
@@ -1240,7 +1240,7 @@ TEST_F(OpenStreamDirectTest, ZstdCompressedResponse) {
   httplib::Headers headers;
   headers.emplace("Accept-Encoding", "zstd");
 
-  auto handle = cli.open_stream_direct("/gzip-chunked", headers);
+  auto handle = cli.open_stream("/gzip-chunked", headers);
   ASSERT_TRUE(handle.is_valid());
   EXPECT_EQ(200, handle.response->status);
 
@@ -1261,7 +1261,7 @@ TEST_F(OpenStreamDirectTest, ZstdCompressedResponseInChunks) {
   httplib::Headers headers;
   headers.emplace("Accept-Encoding", "zstd");
 
-  auto handle = cli.open_stream_direct("/gzip-chunked", headers);
+  auto handle = cli.open_stream("/gzip-chunked", headers);
   ASSERT_TRUE(handle.is_valid());
 
   std::string result;
@@ -1284,7 +1284,7 @@ TEST_F(OpenStreamDirectTest, LargeGzipCompressedResponse) {
   httplib::Headers headers;
   headers.emplace("Accept-Encoding", "gzip, deflate");
 
-  auto handle = cli.open_stream_direct("/large-compressible", headers);
+  auto handle = cli.open_stream("/large-compressible", headers);
   ASSERT_TRUE(handle.is_valid());
   EXPECT_EQ(200, handle.response->status);
 
@@ -1308,7 +1308,7 @@ TEST_F(OpenStreamDirectTest, LargeGzipInChunksSmallBuffer) {
   httplib::Headers headers;
   headers.emplace("Accept-Encoding", "gzip, deflate");
 
-  auto handle = cli.open_stream_direct("/large-compressible", headers);
+  auto handle = cli.open_stream("/large-compressible", headers);
   ASSERT_TRUE(handle.is_valid());
 
   // Read with very small buffer to stress decompression buffering
@@ -1331,7 +1331,7 @@ TEST_F(OpenStreamDirectTest, LargeBrotliCompressedResponse) {
   httplib::Headers headers;
   headers.emplace("Accept-Encoding", "br");
 
-  auto handle = cli.open_stream_direct("/large-compressible", headers);
+  auto handle = cli.open_stream("/large-compressible", headers);
   ASSERT_TRUE(handle.is_valid());
   EXPECT_EQ(200, handle.response->status);
 
@@ -1352,7 +1352,7 @@ TEST_F(OpenStreamDirectTest, LargeZstdCompressedResponse) {
   httplib::Headers headers;
   headers.emplace("Accept-Encoding", "zstd");
 
-  auto handle = cli.open_stream_direct("/large-compressible", headers);
+  auto handle = cli.open_stream("/large-compressible", headers);
   ASSERT_TRUE(handle.is_valid());
   EXPECT_EQ(200, handle.response->status);
 
@@ -1409,9 +1409,9 @@ TEST_F(SSLOpenStreamDirectTest, BasicSSLStream) {
   httplib::SSLClient cli("127.0.0.1", 8788);
   cli.enable_server_certificate_verification(false);
 
-  auto handle = cli.open_stream_direct("/hello");
+  auto handle = cli.open_stream("/hello");
 
-  ASSERT_TRUE(handle.is_valid());
+  ASSERT_TRUE(handle.is_valid()) << "Error: " << static_cast<int>(handle.error);
   EXPECT_EQ(200, handle.response->status);
   EXPECT_TRUE(handle.is_socket_direct_mode());
 
@@ -1423,9 +1423,9 @@ TEST_F(SSLOpenStreamDirectTest, SSLChunkedResponse) {
   httplib::SSLClient cli("127.0.0.1", 8788);
   cli.enable_server_certificate_verification(false);
 
-  auto handle = cli.open_stream_direct("/chunked");
+  auto handle = cli.open_stream("/chunked");
 
-  ASSERT_TRUE(handle.is_valid());
+  ASSERT_TRUE(handle.is_valid()) << "Error: " << static_cast<int>(handle.error);
   EXPECT_TRUE(handle.body_reader_.chunked);
 
   auto body = handle.read_all();

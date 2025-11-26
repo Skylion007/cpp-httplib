@@ -7,26 +7,67 @@
 //  Copyright (c) 2025 Yuji Hirose. All rights reserved.
 //  MIT License
 //
+//  C++23 Migration Notes:
+//  ----------------------
+//  When C++23 is adopted, this header can be simplified:
+//  - Replace custom Generator<T> with std::generator<T> from <generator>
+//  - The Generator interface is designed to be compatible with std::generator
+//  - StreamingResult and GetStream() can remain unchanged
+//
 
 #ifndef CPPHTTPLIB_HTTPLIB20_H
 #define CPPHTTPLIB_HTTPLIB20_H
 
+// Version check: requires C++20 or later
 #if __cplusplus < 202002L
 #error "httplib20.h requires C++20 or later"
 #endif
 
 #include "httplib.h"
+
 #include <coroutine>
 #include <cstring>
 #include <iterator>
 #include <string_view>
 #include <utility>
 
+// C++23 feature detection for std::generator
+// When available, prefer std::generator over custom implementation
+#if defined(__cpp_lib_generator) && __cpp_lib_generator >= 202207L
+#include <generator>
+#define CPPHTTPLIB_USE_STD_GENERATOR 1
+#endif
+
 namespace httplib {
 
 //------------------------------------------------------------------------------
-// Generator<T> - A C++20 coroutine-based generator (similar to std::generator)
+// Generator<T> - A C++20 coroutine-based generator
 //------------------------------------------------------------------------------
+//
+// This is a simplified implementation compatible with C++23's std::generator.
+// Key features:
+//   - Lazy evaluation: values computed on-demand
+//   - Range-based for loop support via iterators
+//   - Move-only semantics (non-copyable)
+//   - Exception propagation from coroutine body
+//
+// Usage:
+//   Generator<int> range(int start, int end) {
+//     for (int i = start; i < end; ++i) {
+//       co_yield i;
+//     }
+//   }
+//
+//   for (int value : range(0, 10)) {
+//     std::cout << value << '\n';
+//   }
+//
+// C++23 Migration:
+//   Replace with: using Generator = std::generator;
+//   Or: #include <generator> and use std::generator directly
+//
+
+#ifndef CPPHTTPLIB_USE_STD_GENERATOR
 
 template <typename T> class Generator {
 public:
@@ -102,10 +143,11 @@ public:
     Handle handle_;
   };
 
+  // Constructors
   Generator() noexcept : handle_(nullptr) {}
-
   explicit Generator(Handle handle) noexcept : handle_(handle) {}
 
+  // Move-only semantics
   Generator(Generator &&other) noexcept : handle_(other.handle_) {
     other.handle_ = nullptr;
   }
@@ -126,6 +168,7 @@ public:
     if (handle_) { handle_.destroy(); }
   }
 
+  // Range interface
   Iterator begin() {
     if (handle_) {
       handle_.resume();
@@ -146,6 +189,13 @@ private:
   Handle handle_;
 };
 
+#else // CPPHTTPLIB_USE_STD_GENERATOR
+
+// C++23: Use std::generator directly
+template <typename T> using Generator = std::generator<T>;
+
+#endif // CPPHTTPLIB_USE_STD_GENERATOR
+
 //------------------------------------------------------------------------------
 // Streaming client functions using Generator
 //------------------------------------------------------------------------------
@@ -153,6 +203,7 @@ private:
 namespace detail {
 
 // Coroutine that yields chunks from StreamHandle
+// Works with both memory buffer mode and socket direct mode
 inline Generator<std::string_view> stream_body(ClientImpl::StreamHandle handle,
                                                size_t chunk_size = 8192) {
   if (!handle.is_valid()) { co_return; }
@@ -168,8 +219,20 @@ inline Generator<std::string_view> stream_body(ClientImpl::StreamHandle handle,
 } // namespace detail
 
 //------------------------------------------------------------------------------
-// StreamingResult - Wrapper for streaming response with Generator support
+// StreamingResult - High-level wrapper for streaming HTTP responses
 //------------------------------------------------------------------------------
+//
+// Provides a convenient interface for streaming HTTP response bodies.
+// Supports both memory-buffered and socket-direct streaming modes.
+//
+// Usage:
+//   auto result = httplib::GetStream(client, "/large-file");
+//   if (result) {
+//     for (auto chunk : result.body()) {
+//       process(chunk);
+//     }
+//   }
+//
 
 class StreamingResult {
 public:
@@ -178,17 +241,17 @@ public:
   explicit StreamingResult(ClientImpl::StreamHandle &&handle)
       : handle_(std::move(handle)) {}
 
+  // Move-only semantics
   StreamingResult(StreamingResult &&) = default;
   StreamingResult &operator=(StreamingResult &&) = default;
-
   StreamingResult(const StreamingResult &) = delete;
   StreamingResult &operator=(const StreamingResult &) = delete;
 
-  // Check if result is valid
+  // Validity check
   bool is_valid() const { return handle_.is_valid(); }
   explicit operator bool() const { return is_valid(); }
 
-  // Access response metadata
+  // Response metadata access
   int status() const {
     return handle_.response ? handle_.response->status : -1;
   }
@@ -210,26 +273,43 @@ public:
 
   Error error() const { return handle_.error; }
 
-  // Get body as Generator for streaming reads
+  // Get read error (socket direct mode only)
+  Error read_error() const { return handle_.get_read_error(); }
+
+  // Streaming body access - returns Generator for lazy iteration
   Generator<std::string_view> body(size_t chunk_size = 8192) {
     return detail::stream_body(std::move(handle_), chunk_size);
   }
 
   // Read entire body at once (convenience method)
-  std::string read_all() {
-    if (!handle_.is_valid()) { return {}; }
-    return handle_.response ? std::move(handle_.response->body) : std::string{};
-  }
+  // Note: For large responses, prefer body() for memory efficiency
+  std::string read_all() { return handle_.read_all(); }
 
 private:
   ClientImpl::StreamHandle handle_;
 };
 
 //------------------------------------------------------------------------------
-// Free functions for streaming requests
+// Free functions for streaming HTTP requests
 //------------------------------------------------------------------------------
+//
+// GetStream reads response body directly from the socket without buffering
+// the entire response in memory. This is ideal for:
+//   - Large file downloads
+//   - Server-Sent Events (SSE)
+//   - Any streaming API
+//
+// Note: The connection is not reused (Keep-Alive disabled) since socket
+// ownership is transferred to StreamHandle. For repeated small requests
+// where connection reuse matters, use client.Get() instead.
+//
+// Usage:
+//   auto result = httplib::GetStream(client, "/huge-file");
+//   for (auto chunk : result.body()) {
+//     write_to_file(chunk);
+//   }
+//
 
-// GET request with streaming response
 inline StreamingResult GetStream(Client &cli, const std::string &path) {
   return StreamingResult{cli.open_stream(path)};
 }
@@ -239,7 +319,7 @@ inline StreamingResult GetStream(Client &cli, const std::string &path,
   return StreamingResult{cli.open_stream(path, headers)};
 }
 
-// Overloads for ClientImpl
+// Overloads for ClientImpl (direct use without Client wrapper)
 inline StreamingResult GetStream(ClientImpl &cli, const std::string &path) {
   return StreamingResult{cli.open_stream(path)};
 }

@@ -1,10 +1,10 @@
 # cpp-httplib C++20 Streaming API
 
-This document describes the C++20 streaming extensions for cpp-httplib, providing a generator-like API for handling HTTP responses incrementally.
+This document describes the C++20 streaming extensions for cpp-httplib, providing a generator-like API for handling HTTP responses incrementally with **true socket-level streaming**.
 
 ## Overview
 
-The C++20 streaming API allows you to process HTTP response bodies chunk by chunk using C++20 coroutines, similar to Python's generators or C++23's `std::generator`. This is particularly useful for:
+The C++20 streaming API allows you to process HTTP response bodies chunk by chunk using C++20 coroutines, similar to Python's generators or C++23's `std::generator`. Data is read directly from the network socket, enabling low-memory processing of large responses. This is particularly useful for:
 
 - **LLM/AI streaming responses** (e.g., ChatGPT, Claude, Ollama)
 - **Server-Sent Events (SSE)**
@@ -42,10 +42,12 @@ int main() {
 
 ### Low-Level API: `StreamHandle`
 
-The `StreamHandle` struct provides direct control over streaming responses.
+The `StreamHandle` struct provides direct control over streaming responses. It takes ownership of the socket connection and reads data directly from the network.
+
+> **Note:** When using `open_stream()`, the connection is dedicated to streaming and **Keep-Alive is not supported**. For Keep-Alive connections, use `client.Get()` instead.
 
 ```cpp
-// Open a stream
+// Open a stream (takes ownership of socket)
 httplib::Client cli("http://localhost:8080");
 auto handle = cli.open_stream("/path");
 
@@ -74,7 +76,8 @@ if (handle.is_valid()) {
 | `response` | `std::unique_ptr<Response>` | HTTP response with headers |
 | `error` | `Error` | Error code if request failed |
 | `is_valid()` | `bool` | Returns true if response is valid |
-| `read(buf, len)` | `ssize_t` | Read up to `len` bytes, returns bytes read (0 at EOF, -1 on error) |
+| `is_socket_direct_mode()` | `bool` | Returns true (always direct socket reading) |
+| `read(buf, len)` | `ssize_t` | Read up to `len` bytes directly from socket |
 | `read_all()` | `std::string` | Read all remaining content |
 
 ### High-Level API: `GetStream()` and `StreamingResult`
@@ -257,20 +260,39 @@ int main() {
 | Feature | `Client::Get()` | `open_stream()` | `GetStream()` |
 |---------|----------------|-----------------|---------------|
 | Headers available | After complete | Immediately | Immediately |
-| Body reading | All at once | Incremental | Generator-based |
-| Memory usage | Full body in RAM | Controlled | Controlled |
+| Body reading | All at once | Direct from socket | Generator-based |
+| Memory usage | Full body in RAM | Minimal (controlled) | Minimal (controlled) |
+| Keep-Alive support | ✅ Yes | ❌ No | ❌ No |
+| Compression | Auto-handled | Auto-handled | Auto-handled |
 | C++ standard | C++11 | C++11 | C++20 |
-| Best for | Small responses | Low-level control | Modern streaming |
+| Best for | Small responses, Keep-Alive | Low-level streaming | Modern streaming |
 
-## Current Limitations
+## Features
 
-> **Note:** The current implementation loads the entire response body into memory before streaming. True socket-level streaming (reading directly from the network) is planned for a future release.
+- **True socket-level streaming**: Data is read directly from the network socket
+- **Low memory footprint**: Only the current chunk is held in memory
+- **Compression support**: Automatic decompression for gzip, brotli, and zstd
+- **Chunked transfer**: Full support for chunked transfer encoding
+- **SSL/TLS support**: Works with HTTPS connections
+- **C++23 ready**: `Generator<T>` is compatible with `std::generator` interface
 
-This means:
+## Important Notes
 
-- Memory usage is similar to `Client::Get()` for now
-- The API is ready for future optimization
-- Useful for header-first processing and chunked iteration patterns
+### Keep-Alive Behavior
+
+The streaming API (`GetStream()` / `open_stream()`) takes ownership of the socket connection for the duration of the stream. This means:
+
+- **Keep-Alive is not supported** for streaming connections
+- The socket is closed when `StreamHandle` is destroyed
+- For Keep-Alive scenarios, use the standard `client.Get()` API instead
+
+```cpp
+// Use for streaming (no Keep-Alive)
+auto stream = httplib::GetStream(cli, "/large-stream");
+
+// Use for Keep-Alive connections
+auto result = cli.Get("/api/data");  // Connection can be reused
+```
 
 ## Building
 
