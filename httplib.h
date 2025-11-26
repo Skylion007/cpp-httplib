@@ -1408,9 +1408,27 @@ public:
   struct StreamHandle {
     std::unique_ptr<Response> response;
     Error error = Error::Success;
+    size_t read_offset_ = 0;
 
     bool is_valid() const {
       return response != nullptr && error == Error::Success;
+    }
+
+    // Read up to len bytes into buf, returns number of bytes read (0 at EOF)
+    // NOTE: Current implementation reads from pre-loaded response body.
+    // TODO: Implement true streaming by reading directly from socket stream
+    //       to support large responses without loading entire body into memory.
+    ssize_t read(char *buf, size_t len) {
+      if (!is_valid() || !response) { return -1; }
+
+      const auto &body = response->body;
+      if (read_offset_ >= body.size()) { return 0; }
+
+      auto remaining = body.size() - read_offset_;
+      auto to_read = (std::min)(len, remaining);
+      std::memcpy(buf, body.data() + read_offset_, to_read);
+      read_offset_ += to_read;
+      return static_cast<ssize_t>(to_read);
     }
   };
 

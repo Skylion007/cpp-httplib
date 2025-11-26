@@ -128,3 +128,70 @@ TEST_F(StreamingServerTest, OpenStreamConnectionError) {
   EXPECT_FALSE(handle.is_valid());
   EXPECT_NE(httplib::Error::Success, handle.error);
 }
+
+//------------------------------------------------------------------------------
+// Step 3: StreamHandle::read() method test
+//------------------------------------------------------------------------------
+
+TEST_F(StreamingServerTest, ReadMethodExists) {
+  httplib::Client cli("localhost", 8787);
+
+  auto handle = cli.open_stream("/hello");
+  ASSERT_TRUE(handle.is_valid());
+
+  // Read should return data
+  char buf[1024];
+  auto n = handle.read(buf, sizeof(buf));
+
+  EXPECT_GT(n, 0);
+}
+
+TEST_F(StreamingServerTest, ReadReturnsCorrectContent) {
+  httplib::Client cli("localhost", 8787);
+
+  auto handle = cli.open_stream("/hello");
+  ASSERT_TRUE(handle.is_valid());
+
+  std::string body;
+  char buf[1024];
+  ssize_t n;
+  while ((n = handle.read(buf, sizeof(buf))) > 0) {
+    body.append(buf, static_cast<size_t>(n));
+  }
+
+  EXPECT_EQ("Hello World!", body);
+}
+
+TEST_F(StreamingServerTest, ReadReturnsZeroAtEnd) {
+  httplib::Client cli("localhost", 8787);
+
+  auto handle = cli.open_stream("/hello");
+  ASSERT_TRUE(handle.is_valid());
+
+  // Read all content
+  char buf[1024];
+  while (handle.read(buf, sizeof(buf)) > 0) {
+    // consume
+  }
+
+  // Further reads should return 0
+  auto n = handle.read(buf, sizeof(buf));
+  EXPECT_EQ(0, n);
+}
+
+TEST_F(StreamingServerTest, ReadSmallBuffer) {
+  httplib::Client cli("localhost", 8787);
+
+  auto handle = cli.open_stream("/hello");
+  ASSERT_TRUE(handle.is_valid());
+
+  // Read with small buffer
+  std::string body;
+  char buf[4]; // Small buffer
+  ssize_t n;
+  while ((n = handle.read(buf, sizeof(buf))) > 0) {
+    body.append(buf, static_cast<size_t>(n));
+  }
+
+  EXPECT_EQ("Hello World!", body);
+}
