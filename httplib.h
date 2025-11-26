@@ -1404,6 +1404,16 @@ public:
 
   virtual bool is_valid() const;
 
+  // Streaming handle for reading response body incrementally
+  struct StreamHandle {
+    std::unique_ptr<Response> response;
+    Error error = Error::Success;
+
+    bool is_valid() const {
+      return response != nullptr && error == Error::Success;
+    }
+  };
+
   // clang-format off
   Result Get(const std::string &path, DownloadProgress progress = nullptr);
   Result Get(const std::string &path, ContentReceiver content_receiver, DownloadProgress progress = nullptr);

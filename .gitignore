@@ -29,6 +29,7 @@ example/*.pem
 test/httplib.cc
 test/httplib.h
 test/test
+test/test20
 test/server_fuzzer
 test/test_proxy
 test/test_split

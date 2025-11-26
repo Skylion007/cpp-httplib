@@ -73,6 +73,10 @@ test : test.cc include_httplib.cc ../httplib.h Makefile cert.pem
 	$(CXX) -o $@ -I.. $(CXXFLAGS) test.cc include_httplib.cc $(TEST_ARGS)
 	@file $@
 
+test20 : test20.cc ../httplib.h Makefile
+	$(CXX) -o $@ -I.. -std=c++20 -g -Wall -Wextra -Wtype-limits -Wconversion -Wshadow test20.cc $(TEST_ARGS)
+	@file $@
+
 # Note: The intention of test_split is to verify that it works to compile and
 # link the split httplib.h, so there is normally no need to execute it.
 test_split : test.cc ../httplib.h httplib.cc Makefile cert.pem
