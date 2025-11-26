@@ -791,3 +791,109 @@ TEST_F(StreamHandleV2Test, ReadAllSocketDirect) {
   auto result = handle.read_all();
   EXPECT_EQ("Hello from socket!", result);
 }
+
+// =============================================================================
+// Phase 2.5: open_stream_direct() Tests (True Streaming)
+// =============================================================================
+
+class OpenStreamDirectTest : public ::testing::Test {
+protected:
+  void SetUp() override {
+    // Start test server
+    svr_.Get("/hello", [](const httplib::Request &, httplib::Response &res) {
+      res.set_content("Hello World!", "text/plain");
+    });
+
+    svr_.Get("/large", [](const httplib::Request &, httplib::Response &res) {
+      std::string body(10000, 'X');
+      res.set_content(body, "text/plain");
+    });
+
+    svr_.Get("/chunked", [](const httplib::Request &, httplib::Response &res) {
+      res.set_chunked_content_provider(
+          "text/plain", [](size_t offset, httplib::DataSink &sink) {
+            if (offset < 3) {
+              sink.write("chunk", 5);
+              return true;
+            }
+            sink.done();
+            return true;
+          });
+    });
+
+    thread_ = std::thread([this]() { svr_.listen("127.0.0.1", 8787); });
+    svr_.wait_until_ready();
+  }
+
+  void TearDown() override {
+    svr_.stop();
+    if (thread_.joinable()) { thread_.join(); }
+  }
+
+  httplib::Server svr_;
+  std::thread thread_;
+};
+
+TEST_F(OpenStreamDirectTest, MethodExists) {
+  httplib::Client cli("127.0.0.1", 8787);
+
+  auto handle = cli.open_stream_direct("/hello");
+
+  EXPECT_TRUE(handle.is_valid());
+  EXPECT_EQ(200, handle.response->status);
+}
+
+TEST_F(OpenStreamDirectTest, IsSocketDirectMode) {
+  httplib::Client cli("127.0.0.1", 8787);
+
+  auto handle = cli.open_stream_direct("/hello");
+
+  EXPECT_TRUE(handle.is_valid());
+  EXPECT_TRUE(handle.is_socket_direct_mode());
+}
+
+TEST_F(OpenStreamDirectTest, ReadBody) {
+  httplib::Client cli("127.0.0.1", 8787);
+
+  auto handle = cli.open_stream_direct("/hello");
+  ASSERT_TRUE(handle.is_valid());
+
+  auto body = handle.read_all();
+  EXPECT_EQ("Hello World!", body);
+}
+
+TEST_F(OpenStreamDirectTest, ReadBodyInChunks) {
+  httplib::Client cli("127.0.0.1", 8787);
+
+  auto handle = cli.open_stream_direct("/hello");
+  ASSERT_TRUE(handle.is_valid());
+
+  std::string result;
+  char buf[4];
+  ssize_t n;
+  while ((n = handle.read(buf, sizeof(buf))) > 0) {
+    result.append(buf, static_cast<size_t>(n));
+  }
+
+  EXPECT_EQ("Hello World!", result);
+}
+
+TEST_F(OpenStreamDirectTest, LargeResponse) {
+  httplib::Client cli("127.0.0.1", 8787);
+
+  auto handle = cli.open_stream_direct("/large");
+  ASSERT_TRUE(handle.is_valid());
+
+  auto body = handle.read_all();
+  EXPECT_EQ(10000u, body.size());
+  EXPECT_EQ(std::string(10000, 'X'), body);
+}
+
+TEST_F(OpenStreamDirectTest, ConnectionError) {
+  httplib::Client cli("127.0.0.1", 9999); // Wrong port
+
+  auto handle = cli.open_stream_direct("/hello");
+
+  EXPECT_FALSE(handle.is_valid());
+  EXPECT_NE(httplib::Error::Success, handle.error);
+}

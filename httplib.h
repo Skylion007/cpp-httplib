@@ -1481,6 +1481,7 @@ public:
 
     // Mode 2: Socket direct (true streaming)
     std::unique_ptr<ClientConnection> connection_; // Socket ownership
+    std::unique_ptr<Stream> socket_stream_;        // SocketStream ownership
     Stream *stream_ = nullptr;                     // Stream for reading
     detail::BodyReader body_reader_;               // Body reading state
 
@@ -1632,6 +1633,12 @@ public:
   // Streaming API: Open a stream for reading response body incrementally
   StreamHandle open_stream(const std::string &path);
   StreamHandle open_stream(const std::string &path, const Headers &headers);
+
+  // True streaming API: Socket ownership transferred to StreamHandle
+  StreamHandle open_stream_direct(const std::string &path);
+  StreamHandle open_stream_direct(const std::string &path,
+                                  const Headers &headers);
+
   bool send(Request &req, Response &res, Error &error);
   Result send(const Request &req);
 
@@ -2004,6 +2011,12 @@ public:
   ClientImpl::StreamHandle open_stream(const std::string &path);
   ClientImpl::StreamHandle open_stream(const std::string &path,
                                        const Headers &headers);
+
+  // True streaming API: Socket ownership transferred to StreamHandle
+  ClientImpl::StreamHandle open_stream_direct(const std::string &path);
+  ClientImpl::StreamHandle open_stream_direct(const std::string &path,
+                                              const Headers &headers);
+
   bool send(Request &req, Response &res, Error &error);
   Result send(const Request &req);
 
@@ -9155,6 +9168,121 @@ ClientImpl::open_stream(const std::string &path, const Headers &headers) {
   return handle;
 }
 
+inline ClientImpl::StreamHandle
+ClientImpl::open_stream_direct(const std::string &path) {
+  return open_stream_direct(path, Headers{});
+}
+
+inline ClientImpl::StreamHandle
+ClientImpl::open_stream_direct(const std::string &path,
+                               const Headers &headers) {
+  StreamHandle handle;
+  handle.response = detail::make_unique<Response>();
+  handle.error = Error::Success;
+
+  // Create socket connection
+  handle.connection_ = detail::make_unique<ClientConnection>();
+
+  {
+    std::lock_guard<std::mutex> guard(socket_mutex_);
+
+    // Check if existing socket is alive, if not create new one
+    auto is_alive = false;
+    if (socket_.is_open()) {
+      is_alive = detail::is_socket_alive(socket_.sock);
+      if (!is_alive) {
+        shutdown_ssl(socket_, false);
+        shutdown_socket(socket_);
+        close_socket(socket_);
+      }
+    }
+
+    if (!is_alive) {
+      if (!create_and_connect_socket(socket_, handle.error)) {
+        handle.response.reset();
+        return handle;
+      }
+    }
+
+    // Transfer socket ownership to StreamHandle
+    handle.connection_->sock = socket_.sock;
+#ifdef CPPHTTPLIB_OPENSSL_SUPPORT
+    handle.connection_->ssl = socket_.ssl;
+    socket_.ssl = nullptr;
+#endif
+    socket_.sock = INVALID_SOCKET;
+  }
+
+  // Create SocketStream for the transferred socket
+  handle.socket_stream_ = detail::make_unique<detail::SocketStream>(
+      handle.connection_->sock, read_timeout_sec_, read_timeout_usec_,
+      write_timeout_sec_, write_timeout_usec_);
+  handle.stream_ = handle.socket_stream_.get();
+
+  // Build and send request
+  Request req;
+  req.method = "GET";
+  req.path = path;
+  req.headers = headers;
+
+  // Add default headers
+  for (const auto &header : default_headers_) {
+    if (req.headers.find(header.first) == req.headers.end()) {
+      req.headers.insert(header);
+    }
+  }
+
+  // Add required headers before writing
+  if (req.headers.find("Host") == req.headers.end()) {
+    req.headers.emplace("Host", host_and_port_);
+  }
+  if (req.headers.find("Accept") == req.headers.end()) {
+    req.headers.emplace("Accept", "*/*");
+  }
+  if (req.headers.find("User-Agent") == req.headers.end()) {
+    req.headers.emplace("User-Agent", CPPHTTPLIB_VERSION);
+  }
+
+  // Write request line
+  auto &strm = *handle.stream_;
+  if (detail::write_request_line(strm, req.method, req.path) < 0) {
+    handle.error = Error::Write;
+    handle.response.reset();
+    return handle;
+  }
+
+  // Write headers
+  // Write headers
+  if (!detail::write_headers(strm, req.headers)) {
+    handle.error = Error::Write;
+    handle.response.reset();
+    return handle;
+  }
+
+  // Read response headers only (not body)
+  if (!read_response_line(strm, req, *handle.response) ||
+      !detail::read_headers(strm, handle.response->headers)) {
+    handle.error = Error::Read;
+    handle.response.reset();
+    return handle;
+  }
+
+  // Set up BodyReader based on response headers
+  handle.body_reader_.stream = handle.stream_;
+
+  auto content_length_str = handle.response->get_header_value("Content-Length");
+  if (!content_length_str.empty()) {
+    handle.body_reader_.content_length =
+        static_cast<size_t>(std::stoull(content_length_str));
+  }
+
+  auto transfer_encoding =
+      handle.response->get_header_value("Transfer-Encoding");
+  handle.body_reader_.chunked = (transfer_encoding == "chunked");
+
+  return handle;
+}
+
 inline bool ClientImpl::handle_request(Stream &strm, Request &req,
                                        Response &res, bool close_connection,
                                        Error &error) {
@@ -12373,6 +12501,15 @@ inline ClientImpl::StreamHandle Client::open_stream(const std::string &path) {
 inline ClientImpl::StreamHandle Client::open_stream(const std::string &path,
                                                     const Headers &headers) {
   return cli_->open_stream(path, headers);
+}
+
+inline ClientImpl::StreamHandle
+Client::open_stream_direct(const std::string &path) {
+  return cli_->open_stream_direct(path);
+}
+inline ClientImpl::StreamHandle
+Client::open_stream_direct(const std::string &path, const Headers &headers) {
+  return cli_->open_stream_direct(path, headers);
 }
 
 inline bool Client::send(Request &req, Response &res, Error &error) {
