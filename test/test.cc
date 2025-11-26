@@ -8394,14 +8394,19 @@ TEST(SSLClientTest, ServerCertificateVerificationError_Online) {
   ASSERT_TRUE(!res);
   EXPECT_EQ(Error::SSLServerVerification, res.error());
 
-  // For SSL server verification errors, ssl_error should be 0, only
-  // ssl_openssl_error should be set
+  // For SSL server verification errors, ssl_error should be 0
   EXPECT_EQ(0, res.ssl_error());
 
+#if defined(_WIN32) &&                                                         \
+    !defined(CPPHTTPLIB_DISABLE_WINDOWS_AUTOMATIC_ROOT_CERTIFICATES_UPDATE)
+  // On Windows with Schannel, check wincrypt_error instead of ssl_openssl_error
+  EXPECT_NE(0UL, res.wincrypt_error());
+#else
   // Verify OpenSSL error is captured for SSLServerVerification
   // This occurs when SSL_get_verify_result() returns a verification failure
   EXPECT_EQ(static_cast<unsigned long>(X509_V_ERR_DEPTH_ZERO_SELF_SIGNED_CERT),
             res.ssl_openssl_error());
+#endif
 }
 
 TEST(SSLClientTest, ServerHostnameVerificationError_Online) {
@@ -8416,14 +8421,19 @@ TEST(SSLClientTest, ServerHostnameVerificationError_Online) {
 
   EXPECT_EQ(Error::SSLServerHostnameVerification, res.error());
 
-  // For SSL hostname verification errors, ssl_error should be 0, only
-  // ssl_openssl_error should be set
+  // For SSL hostname verification errors, ssl_error should be 0
   EXPECT_EQ(0, res.ssl_error());
 
+#if defined(_WIN32) &&                                                         \
+    !defined(CPPHTTPLIB_DISABLE_WINDOWS_AUTOMATIC_ROOT_CERTIFICATES_UPDATE)
+  // On Windows with Schannel, check wincrypt_error instead of ssl_openssl_error
+  EXPECT_NE(0UL, res.wincrypt_error());
+#else
   // Verify OpenSSL error is captured for SSLServerHostnameVerification
   // This occurs when verify_host() fails due to hostname mismatch
   EXPECT_EQ(static_cast<unsigned long>(X509_V_ERR_HOSTNAME_MISMATCH),
             res.ssl_openssl_error());
+#endif
 }
 
 TEST(SSLClientTest, ServerCertificateVerification1_Online) {
@@ -8799,14 +8809,19 @@ TEST(SSLClientServerTest, ClientCertMissing) {
   ASSERT_TRUE(!res);
   EXPECT_EQ(Error::SSLServerVerification, res.error());
 
-  // For SSL server verification errors, ssl_error should be 0, only
-  // ssl_openssl_error should be set
+  // For SSL server verification errors, ssl_error should be 0
   EXPECT_EQ(0, res.ssl_error());
 
+#if defined(_WIN32) &&                                                         \
+    !defined(CPPHTTPLIB_DISABLE_WINDOWS_AUTOMATIC_ROOT_CERTIFICATES_UPDATE)
+  // On Windows with Schannel, check wincrypt_error instead of ssl_openssl_error
+  EXPECT_NE(0UL, res.wincrypt_error());
+#else
   // Verify OpenSSL error is captured for SSLServerVerification
   // Note: This test may have different error codes depending on the exact
   // verification failure
   EXPECT_NE(0UL, res.ssl_openssl_error());
+#endif
 }
 
 TEST(SSLClientServerTest, TrustDirOptional) {
