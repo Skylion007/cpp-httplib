@@ -1467,9 +1467,15 @@ struct BodyReader {
   // For chunked encoding
   size_t current_chunk_remaining = 0;
 
+  // Error tracking
+  Error last_error = Error::Success;
+
   // Read up to len bytes into buf
   // Returns bytes read, 0 on EOF, -1 on error
   ssize_t read(char *buf, size_t len);
+
+  // Check if an error occurred during reading
+  bool has_error() const { return last_error != Error::Success; }
 };
 
 } // namespace detail
@@ -1568,6 +1574,12 @@ public:
         return result;
       }
     }
+
+    // Get the last error that occurred during reading (socket direct mode only)
+    Error get_read_error() const { return body_reader_.last_error; }
+
+    // Check if a read error occurred (socket direct mode only)
+    bool has_read_error() const { return body_reader_.has_error(); }
   };
 
   // clang-format off
@@ -7255,7 +7267,10 @@ inline ssize_t Stream::write(const std::string &s) {
 
 // BodyReader implementation
 inline ssize_t detail::BodyReader::read(char *buf, size_t len) {
-  if (!stream) { return -1; }
+  if (!stream) {
+    last_error = Error::Connection;
+    return -1;
+  }
   if (eof) { return 0; }
 
   if (!chunked) {
@@ -7269,9 +7284,16 @@ inline ssize_t detail::BodyReader::read(char *buf, size_t len) {
     auto to_read = (std::min)(len, remaining);
     auto n = stream->read(buf, to_read);
 
-    if (n <= 0) {
+    if (n < 0) {
+      last_error = Error::Read;
       eof = true;
       return n;
+    }
+    if (n == 0) {
+      // Unexpected EOF before content_length
+      last_error = Error::Read;
+      eof = true;
+      return 0;
     }
 
     bytes_read += static_cast<size_t>(n);
@@ -7288,6 +7310,7 @@ inline ssize_t detail::BodyReader::read(char *buf, size_t len) {
     stream_line_reader line_reader(*stream, line_buf, line_buf_size);
 
     if (!line_reader.getline()) {
+      last_error = Error::Read;
       eof = true;
       return 0;
     }
@@ -7302,7 +7325,8 @@ inline ssize_t detail::BodyReader::read(char *buf, size_t len) {
     char *end_ptr;
     auto chunk_size = std::strtoul(line_reader.ptr(), &end_ptr, 16);
     if (end_ptr == line_reader.ptr() || chunk_size == ULONG_MAX) {
-      return -1; // Parse error
+      last_error = Error::Read; // Invalid chunk format
+      return -1;
     }
 
     if (chunk_size == 0) {
@@ -7318,9 +7342,16 @@ inline ssize_t detail::BodyReader::read(char *buf, size_t len) {
   auto to_read = (std::min)(len, current_chunk_remaining);
   auto n = stream->read(buf, to_read);
 
-  if (n <= 0) {
+  if (n < 0) {
+    last_error = Error::Read;
     eof = true;
     return n;
+  }
+  if (n == 0) {
+    // Unexpected EOF in chunk
+    last_error = Error::Read;
+    eof = true;
+    return 0;
   }
 
   current_chunk_remaining -= static_cast<size_t>(n);

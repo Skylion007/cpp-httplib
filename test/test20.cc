@@ -701,6 +701,108 @@ TEST(BodyReaderTest, ReadWithoutStream) {
   auto n = reader.read(buf, sizeof(buf));
 
   EXPECT_EQ(-1, n);
+  EXPECT_TRUE(reader.has_error());
+  EXPECT_EQ(httplib::Error::Connection, reader.last_error);
+}
+
+//------------------------------------------------------------------------------
+// Phase 2.10: Error handling tests
+//------------------------------------------------------------------------------
+
+// Mock stream that returns error after N bytes
+class ErrorAfterNBytesStream : public httplib::Stream {
+public:
+  ErrorAfterNBytesStream(const std::string &data, size_t error_after)
+      : data_(data), pos_(0), error_after_(error_after) {}
+
+  bool is_readable() const override { return true; }
+  bool wait_readable() const override { return true; }
+  bool wait_writable() const override { return true; }
+
+  ssize_t read(char *ptr, size_t size) override {
+    if (pos_ >= error_after_) { return -1; } // Simulate read error
+    if (pos_ >= data_.size()) { return 0; }
+    size_t to_read =
+        std::min(size, std::min(data_.size() - pos_, error_after_ - pos_));
+    std::memcpy(ptr, data_.data() + pos_, to_read);
+    pos_ += to_read;
+    return static_cast<ssize_t>(to_read);
+  }
+
+  ssize_t write(const char *, size_t) override { return -1; }
+
+  void get_remote_ip_and_port(std::string &ip, int &port) const override {
+    ip = "127.0.0.1";
+    port = 0;
+  }
+
+  void get_local_ip_and_port(std::string &ip, int &port) const override {
+    ip = "127.0.0.1";
+    port = 0;
+  }
+
+  socket_t socket() const override { return INVALID_SOCKET; }
+  time_t duration() const override { return 0; }
+
+private:
+  std::string data_;
+  size_t pos_;
+  size_t error_after_;
+};
+
+TEST(BodyReaderErrorTest, ReadErrorSetsLastError) {
+  ErrorAfterNBytesStream stream("Hello, World!", 5);
+
+  httplib::detail::BodyReader reader;
+  reader.stream = &stream;
+  reader.content_length = 13;
+  reader.chunked = false;
+
+  char buf[32];
+
+  // First read succeeds (5 bytes)
+  auto n1 = reader.read(buf, sizeof(buf));
+  EXPECT_EQ(5, n1);
+  EXPECT_FALSE(reader.has_error());
+
+  // Second read fails
+  auto n2 = reader.read(buf, sizeof(buf));
+  EXPECT_EQ(-1, n2);
+  EXPECT_TRUE(reader.has_error());
+  EXPECT_EQ(httplib::Error::Read, reader.last_error);
+}
+
+TEST(BodyReaderErrorTest, UnexpectedEOFSetsError) {
+  // Data is shorter than content_length
+  MockStream stream("Short");
+
+  httplib::detail::BodyReader reader;
+  reader.stream = &stream;
+  reader.content_length = 100; // Expect 100 bytes but only 5 available
+  reader.chunked = false;
+
+  char buf[32];
+
+  // First read gets the available data
+  auto n1 = reader.read(buf, sizeof(buf));
+  EXPECT_EQ(5, n1);
+  EXPECT_FALSE(reader.has_error());
+
+  // Second read hits unexpected EOF
+  auto n2 = reader.read(buf, sizeof(buf));
+  EXPECT_EQ(0, n2);
+  EXPECT_TRUE(reader.has_error());
+  EXPECT_EQ(httplib::Error::Read, reader.last_error);
+}
+
+TEST(BodyReaderErrorTest, HasErrorMethod) {
+  httplib::detail::BodyReader reader;
+
+  EXPECT_FALSE(reader.has_error());
+  EXPECT_EQ(httplib::Error::Success, reader.last_error);
+
+  reader.last_error = httplib::Error::Read;
+  EXPECT_TRUE(reader.has_error());
 }
 
 // =============================================================================
@@ -799,6 +901,46 @@ TEST_F(StreamHandleV2Test, ReadAllSocketDirect) {
 
   auto result = handle.read_all();
   EXPECT_EQ("Hello from socket!", result);
+}
+
+TEST_F(StreamHandleV2Test, GetReadErrorReturnsSuccess) {
+  httplib::ClientImpl::StreamHandle handle;
+
+  handle.response = std::make_unique<httplib::Response>();
+  handle.response->status = 200;
+
+  handle.stream_ = mock_stream_.get();
+  handle.body_reader_.stream = mock_stream_.get();
+  handle.body_reader_.content_length = 18;
+
+  // No error initially
+  EXPECT_FALSE(handle.has_read_error());
+  EXPECT_EQ(httplib::Error::Success, handle.get_read_error());
+
+  // Read successfully
+  handle.read_all();
+  EXPECT_FALSE(handle.has_read_error());
+}
+
+TEST_F(StreamHandleV2Test, GetReadErrorAfterReadFailure) {
+  auto error_stream =
+      std::make_unique<ErrorAfterNBytesStream>("Hello World", 5);
+
+  httplib::ClientImpl::StreamHandle handle;
+  handle.response = std::make_unique<httplib::Response>();
+  handle.response->status = 200;
+
+  handle.stream_ = error_stream.get();
+  handle.body_reader_.stream = error_stream.get();
+  handle.body_reader_.content_length = 11;
+
+  // Read until error
+  char buf[32];
+  handle.read(buf, sizeof(buf)); // First read: 5 bytes OK
+  handle.read(buf, sizeof(buf)); // Second read: error
+
+  EXPECT_TRUE(handle.has_read_error());
+  EXPECT_EQ(httplib::Error::Read, handle.get_read_error());
 }
 
 // =============================================================================
