@@ -195,3 +195,116 @@ TEST_F(StreamingServerTest, ReadSmallBuffer) {
 
   EXPECT_EQ("Hello World!", body);
 }
+
+//------------------------------------------------------------------------------
+// Step 4: httplib20.h Generator API tests
+//------------------------------------------------------------------------------
+
+#include "../httplib20.h"
+
+TEST_F(StreamingServerTest, GetStreamReturnsStreamingResult) {
+  httplib::Client cli("localhost", 8787);
+
+  auto result = httplib::GetStream(cli, "/hello");
+
+  EXPECT_TRUE(result.is_valid());
+  EXPECT_EQ(200, result.status());
+}
+
+TEST_F(StreamingServerTest, GetStreamWithHeaders) {
+  httplib::Client cli("localhost", 8787);
+
+  auto result = httplib::GetStream(cli, "/hello");
+
+  ASSERT_TRUE(result.is_valid());
+  EXPECT_TRUE(result.has_header("Content-Type"));
+  EXPECT_EQ("text/plain", result.get_header_value("Content-Type"));
+}
+
+TEST_F(StreamingServerTest, GetStreamBodyGenerator) {
+  httplib::Client cli("localhost", 8787);
+
+  auto result = httplib::GetStream(cli, "/hello");
+  ASSERT_TRUE(result.is_valid());
+
+  std::string body;
+  for (auto chunk : result.body()) {
+    body.append(chunk);
+  }
+
+  EXPECT_EQ("Hello World!", body);
+}
+
+TEST_F(StreamingServerTest, GetStreamBodyGeneratorSmallChunks) {
+  httplib::Client cli("localhost", 8787);
+
+  auto result = httplib::GetStream(cli, "/hello");
+  ASSERT_TRUE(result.is_valid());
+
+  std::string body;
+  size_t chunk_count = 0;
+  for (auto chunk : result.body(4)) { // Small chunk size
+    body.append(chunk);
+    chunk_count++;
+  }
+
+  EXPECT_EQ("Hello World!", body);
+  EXPECT_GT(chunk_count, 1u); // Should have multiple chunks
+}
+
+TEST_F(StreamingServerTest, GetStreamReadAll) {
+  httplib::Client cli("localhost", 8787);
+
+  auto result = httplib::GetStream(cli, "/hello");
+  ASSERT_TRUE(result.is_valid());
+
+  std::string body = result.read_all();
+  EXPECT_EQ("Hello World!", body);
+}
+
+TEST_F(StreamingServerTest, GetStreamConnectionError) {
+  httplib::Client cli("localhost", 9999); // No server
+
+  auto result = httplib::GetStream(cli, "/hello");
+
+  EXPECT_FALSE(result.is_valid());
+  EXPECT_NE(httplib::Error::Success, result.error());
+}
+
+TEST_F(StreamingServerTest, GetStream404) {
+  httplib::Client cli("localhost", 8787);
+
+  auto result = httplib::GetStream(cli, "/nonexistent");
+
+  EXPECT_TRUE(result.is_valid());
+  EXPECT_EQ(404, result.status());
+}
+
+TEST(GeneratorTest, EmptyGenerator) {
+  auto gen = []() -> httplib::Generator<int> { co_return; }();
+
+  int count = 0;
+  for (auto val : gen) {
+    (void)val;
+    count++;
+  }
+  EXPECT_EQ(0, count);
+}
+
+TEST(GeneratorTest, SimpleGenerator) {
+  auto gen = []() -> httplib::Generator<int> {
+    co_yield 1;
+    co_yield 2;
+    co_yield 3;
+  }();
+
+  std::vector<int> values;
+  for (auto val : gen) {
+    values.push_back(val);
+  }
+
+  EXPECT_EQ(3u, values.size());
+  EXPECT_EQ(1, values[0]);
+  EXPECT_EQ(2, values[1]);
+  EXPECT_EQ(3, values[2]);
+}
