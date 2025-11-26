@@ -14,12 +14,12 @@ The C++20 streaming API allows you to process HTTP response bodies chunk by chun
 ## Requirements
 
 - C++20 compiler with coroutine support
-- Include `httplib20.h` (which includes `httplib.h`)
+- Include `httplib-stream.h` (which includes `httplib.h`)
 
 ## Quick Start
 
 ```cpp
-#include "httplib20.h"
+#include "httplib-stream.h"
 
 int main() {
     httplib::Client cli("http://localhost:8080");
@@ -82,10 +82,10 @@ if (handle.is_valid()) {
 
 ### High-Level API: `GetStream()` and `StreamingResult`
 
-The `httplib20.h` header provides a more ergonomic API using C++20 coroutines.
+The `httplib-stream.h` header provides a more ergonomic API using C++20 coroutines.
 
 ```cpp
-#include "httplib20.h"
+#include "httplib-stream.h"
 
 httplib::Client cli("http://localhost:8080");
 
@@ -124,58 +124,45 @@ for (auto chunk : result.body(1024)) {
 ### Example 1: SSE (Server-Sent Events) Client
 
 ```cpp
-#include "httplib20.h"
+#include "httplib-stream.h"
 #include <iostream>
 
 int main() {
-    httplib::Client cli("http://localhost:8080");
+    httplib::Client cli("http://localhost:1234");
+    
     auto result = httplib::GetStream(cli, "/events");
+    if (!result) { return 1; }
     
-    if (!result) {
-        std::cerr << "Connection failed\n";
-        return 1;
-    }
-    
-    std::cout << "Connected, receiving events...\n";
-    
-    std::string buffer;
-    for (auto chunk : result.body(256)) {
-        buffer += chunk;
-        
-        // Process complete SSE messages
-        size_t pos;
-        while ((pos = buffer.find("\n\n")) != std::string::npos) {
-            std::string message = buffer.substr(0, pos);
-            buffer.erase(0, pos + 2);
-            
-            std::cout << "Event: " << message << "\n";
-        }
+    for (auto chunk : result.body()) {
+        std::cout << chunk << std::flush;
     }
     
     return 0;
 }
 ```
 
-### Example 2: LLM Streaming Response (Ollama-style)
+For a complete SSE client with auto-reconnection and event parsing, see `example/ssecli-stream.cc`.
+
+### Example 2: LLM Streaming Response
 
 ```cpp
-#include "httplib20.h"
+#include "httplib-stream.h"
 #include <iostream>
 
 int main() {
-    httplib::Client cli("http://localhost:11434");
+    httplib::Client cli("http://localhost:11434");  // Ollama
     
-    // Note: For POST requests, use open_stream with custom request
-    // This example shows the pattern for streaming responses
-    
-    httplib::Headers headers = {{"Content-Type", "application/json"}};
-    auto result = httplib::GetStream(cli, "/api/generate", headers);
+    auto result = httplib::GetStream(cli, "/api/generate");
     
     if (result && result.status() == 200) {
-        for (auto chunk : result.body(1024)) {
-            // Each chunk may contain JSON like: {"response": "Hello"}
+        for (auto chunk : result.body()) {
             std::cout << chunk << std::flush;
         }
+    }
+    
+    // Check for connection errors
+    if (result.read_error() != httplib::Error::Success) {
+        std::cerr << "Connection lost\n";
     }
     
     return 0;
@@ -185,7 +172,7 @@ int main() {
 ### Example 3: Large File Download with Progress
 
 ```cpp
-#include "httplib20.h"
+#include "httplib-stream.h"
 #include <fstream>
 #include <iostream>
 
@@ -215,44 +202,36 @@ int main() {
 ### Example 4: Reverse Proxy Streaming
 
 ```cpp
-#include "httplib20.h"
+#include "httplib.h"
 
-int main() {
-    httplib::Server svr;
+httplib::Server svr;
+
+svr.Get("/proxy/(.*)", [](const httplib::Request& req, httplib::Response& res) {
+    httplib::Client upstream("http://backend:8080");
+    auto handle = upstream.open_stream("/" + req.matches[1].str());
     
-    svr.Get("/proxy/(.*)", [](const httplib::Request& req, httplib::Response& res) {
-        httplib::Client upstream("http://backend:8080");
-        auto handle = upstream.open_stream("/" + req.matches[1].str());
-        
-        if (!handle.is_valid()) {
-            res.status = 502;
-            return;
-        }
-        
-        // Forward status and headers
-        res.status = handle.response->status;
-        for (const auto& h : handle.response->headers) {
-            res.set_header(h.first, h.second);
-        }
-        
-        // Stream body using chunked transfer
-        res.set_chunked_content_provider(
-            handle.response->get_header_value("Content-Type"),
-            [handle = std::move(handle)](size_t, httplib::DataSink& sink) mutable {
-                char buf[8192];
-                ssize_t n = handle.read(buf, sizeof(buf));
-                if (n > 0) {
-                    sink.write(buf, static_cast<size_t>(n));
-                    return true;
-                }
-                sink.done();
+    if (!handle.is_valid()) {
+        res.status = 502;
+        return;
+    }
+    
+    res.status = handle.response->status;
+    res.set_chunked_content_provider(
+        handle.response->get_header_value("Content-Type"),
+        [handle = std::move(handle)](size_t, httplib::DataSink& sink) mutable {
+            char buf[8192];
+            auto n = handle.read(buf, sizeof(buf));
+            if (n > 0) {
+                sink.write(buf, static_cast<size_t>(n));
                 return true;
             }
-        );
-    });
-    
-    svr.listen("0.0.0.0", 3000);
-}
+            sink.done();
+            return true;
+        }
+    );
+});
+
+svr.listen("0.0.0.0", 3000);
 ```
 
 ## Comparison with Existing APIs
@@ -310,4 +289,5 @@ clang++ -std=c++20 -o myapp myapp.cpp -lpthread -lssl -lcrypto
 
 - [Issue #2269](https://github.com/yhirose/cpp-httplib/issues/2269) - Original feature request
 - [httplib.h](./httplib.h) - Main library
-- [httplib20.h](./httplib20.h) - C++20 extensions
+- [httplib-stream.h](./httplib-stream.h) - C++20 extensions
+- [example/ssecli-stream.cc](./example/ssecli-stream.cc) - SSE client with auto-reconnection

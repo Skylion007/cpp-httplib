@@ -16,7 +16,11 @@ example/benchmark
 example/redirect
 !example/redirect.*
 example/ssecli
+!example/ssecli.*
+example/ssecli-stream
+!example/ssecli-stream.*
 example/ssesvr
+!example/ssesvr.*
 example/upload
 !example/upload.*
 example/one_time_request
@@ -29,7 +33,7 @@ example/*.pem
 test/httplib.cc
 test/httplib.h
 test/test
-test/test20
+test/test-stream
 test/server_fuzzer
 test/test_proxy
 test/test_split

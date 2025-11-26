@@ -197,10 +197,10 @@ TEST_F(StreamingServerTest, ReadSmallBuffer) {
 }
 
 //------------------------------------------------------------------------------
-// Step 4: httplib20.h Generator API tests
+// Step 4: httplib-stream.h Generator API tests
 //------------------------------------------------------------------------------
 
-#include "../httplib20.h"
+#include "../httplib-stream.h"
 
 TEST_F(StreamingServerTest, GetStreamReturnsStreamingResult) {
   httplib::Client cli("localhost", 8787);

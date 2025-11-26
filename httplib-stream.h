@@ -1,5 +1,5 @@
 //
-//  httplib20.h
+//  httplib-stream.h
 //
 //  C++20 coroutine extensions for cpp-httplib
 //  Requires C++20 or later
@@ -20,7 +20,7 @@
 
 // Version check: requires C++20 or later
 #if __cplusplus < 202002L
-#error "httplib20.h requires C++20 or later"
+#error "httplib-stream.h requires C++20 or later"
 #endif
 
 #include "httplib.h"
