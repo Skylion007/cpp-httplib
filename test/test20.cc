@@ -511,3 +511,44 @@ TEST_F(ChunkedStreamingTest, SSELikeWithGenerator) {
     EXPECT_NE(std::string::npos, combined.find(expected));
   }
 }
+
+//------------------------------------------------------------------------------
+// Phase 2.1: ClientConnection class tests
+//------------------------------------------------------------------------------
+
+TEST(ClientConnectionTest, StructExists) {
+  // Verify ClientConnection struct is defined
+  httplib::detail::ClientConnection conn;
+
+  // Check default state
+  EXPECT_EQ(INVALID_SOCKET, conn.sock);
+  EXPECT_FALSE(conn.is_open());
+}
+
+TEST(ClientConnectionTest, IsOpenReturnsTrueWhenSocketValid) {
+  httplib::detail::ClientConnection conn;
+  conn.sock = 1; // Fake valid socket
+
+  EXPECT_TRUE(conn.is_open());
+}
+
+TEST(ClientConnectionTest, MoveConstructor) {
+  httplib::detail::ClientConnection conn1;
+  conn1.sock = 42;
+
+  httplib::detail::ClientConnection conn2(std::move(conn1));
+
+  EXPECT_EQ(42, conn2.sock);
+  EXPECT_EQ(INVALID_SOCKET, conn1.sock); // Moved-from state
+}
+
+TEST(ClientConnectionTest, MoveAssignment) {
+  httplib::detail::ClientConnection conn1;
+  conn1.sock = 42;
+
+  httplib::detail::ClientConnection conn2;
+  conn2 = std::move(conn1);
+
+  EXPECT_EQ(42, conn2.sock);
+  EXPECT_EQ(INVALID_SOCKET, conn1.sock); // Moved-from state
+}

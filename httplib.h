@@ -3427,6 +3427,51 @@ inline bool is_socket_alive(socket_t sock) {
   return detail::read_socket(sock, &buf[0], sizeof(buf), MSG_PEEK) > 0;
 }
 
+// ClientConnection: Represents ownership of a socket connection
+// Used for true streaming where StreamHandle owns the connection
+struct ClientConnection {
+  socket_t sock = INVALID_SOCKET;
+#ifdef CPPHTTPLIB_OPENSSL_SUPPORT
+  SSL *ssl = nullptr;
+#endif
+
+  bool is_open() const { return sock != INVALID_SOCKET; }
+
+  // Move-only semantics
+  ClientConnection() = default;
+  ~ClientConnection() = default;
+
+  ClientConnection(const ClientConnection &) = delete;
+  ClientConnection &operator=(const ClientConnection &) = delete;
+
+  ClientConnection(ClientConnection &&other) noexcept
+      : sock(other.sock)
+#ifdef CPPHTTPLIB_OPENSSL_SUPPORT
+        ,
+        ssl(other.ssl)
+#endif
+  {
+    other.sock = INVALID_SOCKET;
+#ifdef CPPHTTPLIB_OPENSSL_SUPPORT
+    other.ssl = nullptr;
+#endif
+  }
+
+  ClientConnection &operator=(ClientConnection &&other) noexcept {
+    if (this != &other) {
+      sock = other.sock;
+#ifdef CPPHTTPLIB_OPENSSL_SUPPORT
+      ssl = other.ssl;
+#endif
+      other.sock = INVALID_SOCKET;
+#ifdef CPPHTTPLIB_OPENSSL_SUPPORT
+      other.ssl = nullptr;
+#endif
+    }
+    return *this;
+  }
+};
+
 class SocketStream final : public Stream {
 public:
   SocketStream(socket_t sock, time_t read_timeout_sec, time_t read_timeout_usec,
