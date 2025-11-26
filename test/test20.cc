@@ -308,3 +308,206 @@ TEST(GeneratorTest, SimpleGenerator) {
   EXPECT_EQ(2, values[1]);
   EXPECT_EQ(3, values[2]);
 }
+
+//------------------------------------------------------------------------------
+// Step 5: Integration tests with chunked transfer encoding
+//------------------------------------------------------------------------------
+
+class ChunkedStreamingTest : public ::testing::Test {
+protected:
+  void SetUp() override {
+    svr_.Get("/chunked", [](const httplib::Request &, httplib::Response &res) {
+      res.set_chunked_content_provider(
+          "text/plain", [](size_t offset, httplib::DataSink &sink) {
+            // Simulate streaming data in chunks
+            if (offset == 0) {
+              sink.write("chunk1\n", 7);
+              return true;
+            } else if (offset == 7) {
+              sink.write("chunk2\n", 7);
+              return true;
+            } else if (offset == 14) {
+              sink.write("chunk3\n", 7);
+              sink.done();
+              return true;
+            }
+            return false;
+          });
+    });
+
+    svr_.Get("/large", [](const httplib::Request &, httplib::Response &res) {
+      // Generate 100KB of data in chunks
+      res.set_chunked_content_provider(
+          "application/octet-stream",
+          [](size_t offset, httplib::DataSink &sink) {
+            const size_t total_size = 100 * 1024; // 100KB
+            const size_t chunk_size = 1024;       // 1KB chunks
+
+            if (offset >= total_size) {
+              sink.done();
+              return true;
+            }
+
+            std::string chunk(chunk_size, 'X');
+            sink.write(chunk.data(), chunk.size());
+            return true;
+          });
+    });
+
+    svr_.Get("/sse-like", [](const httplib::Request &, httplib::Response &res) {
+      // Simulate SSE/LLM streaming response
+      res.set_chunked_content_provider(
+          "text/event-stream",
+          [count = 0](size_t /*offset*/, httplib::DataSink &sink) mutable {
+            if (count < 5) {
+              std::string event =
+                  "data: message " + std::to_string(count) + "\n\n";
+              sink.write(event.data(), event.size());
+              count++;
+              return true;
+            }
+            sink.done();
+            return true;
+          });
+    });
+
+    thread_ = std::thread([this]() { svr_.listen("127.0.0.1", 8787); });
+    svr_.wait_until_ready();
+  }
+
+  void TearDown() override {
+    svr_.stop();
+    if (thread_.joinable()) { thread_.join(); }
+  }
+
+  httplib::Server svr_;
+  std::thread thread_;
+};
+
+TEST_F(ChunkedStreamingTest, ReadChunkedResponse) {
+  httplib::Client cli("http://127.0.0.1:8787");
+  auto handle = cli.open_stream("/chunked");
+
+  ASSERT_TRUE(handle.is_valid());
+  EXPECT_EQ(200, handle.response->status);
+  EXPECT_EQ("text/plain", handle.response->get_header_value("Content-Type"));
+
+  // Read all content
+  std::string body = handle.read_all();
+  EXPECT_EQ("chunk1\nchunk2\nchunk3\n", body);
+}
+
+TEST_F(ChunkedStreamingTest, ReadChunkedResponseInPieces) {
+  httplib::Client cli("http://127.0.0.1:8787");
+  auto handle = cli.open_stream("/chunked");
+
+  ASSERT_TRUE(handle.is_valid());
+
+  // Read in small pieces
+  std::vector<std::string> pieces;
+  char buf[8];
+  ssize_t n;
+  while ((n = handle.read(buf, sizeof(buf))) > 0) {
+    pieces.emplace_back(buf, static_cast<size_t>(n));
+  }
+
+  // Verify we got the content (may be in different chunk sizes)
+  std::string combined;
+  for (const auto &p : pieces) {
+    combined += p;
+  }
+  EXPECT_EQ("chunk1\nchunk2\nchunk3\n", combined);
+}
+
+TEST_F(ChunkedStreamingTest, LargeResponseStreaming) {
+  httplib::Client cli("http://127.0.0.1:8787");
+  auto handle = cli.open_stream("/large");
+
+  ASSERT_TRUE(handle.is_valid());
+  EXPECT_EQ(200, handle.response->status);
+
+  // Read in chunks and verify
+  size_t total_read = 0;
+  char buf[4096];
+  ssize_t n;
+  while ((n = handle.read(buf, sizeof(buf))) > 0) {
+    // Verify content is all 'X'
+    for (size_t i = 0; i < static_cast<size_t>(n); i++) {
+      EXPECT_EQ('X', buf[i]);
+    }
+    total_read += static_cast<size_t>(n);
+  }
+
+  EXPECT_EQ(100u * 1024u, total_read); // 100KB total
+}
+
+TEST_F(ChunkedStreamingTest, SSELikeStreaming) {
+  httplib::Client cli("http://127.0.0.1:8787");
+  auto handle = cli.open_stream("/sse-like");
+
+  ASSERT_TRUE(handle.is_valid());
+  EXPECT_EQ(200, handle.response->status);
+  EXPECT_EQ("text/event-stream",
+            handle.response->get_header_value("Content-Type"));
+
+  std::string body = handle.read_all();
+
+  // Verify SSE format
+  EXPECT_NE(std::string::npos, body.find("data: message 0"));
+  EXPECT_NE(std::string::npos, body.find("data: message 4"));
+}
+
+TEST_F(ChunkedStreamingTest, GeneratorWithChunkedResponse) {
+  httplib::Client cli("http://127.0.0.1:8787");
+  auto result = httplib::GetStream(cli, "/chunked");
+
+  ASSERT_TRUE(result);
+  EXPECT_EQ(200, result.status());
+
+  std::vector<std::string> chunks;
+  for (auto chunk : result.body(8)) {
+    chunks.emplace_back(chunk);
+  }
+
+  // Combine and verify
+  std::string combined;
+  for (const auto &c : chunks) {
+    combined += c;
+  }
+  EXPECT_EQ("chunk1\nchunk2\nchunk3\n", combined);
+}
+
+TEST_F(ChunkedStreamingTest, GeneratorWithLargeResponse) {
+  httplib::Client cli("http://127.0.0.1:8787");
+  auto result = httplib::GetStream(cli, "/large");
+
+  ASSERT_TRUE(result);
+
+  size_t total_size = 0;
+  size_t chunk_count = 0;
+  for (auto chunk : result.body(4096)) {
+    total_size += chunk.size();
+    chunk_count++;
+  }
+
+  EXPECT_EQ(100u * 1024u, total_size); // 100KB total
+  EXPECT_GT(chunk_count, 1u);          // Multiple chunks
+}
+
+TEST_F(ChunkedStreamingTest, SSELikeWithGenerator) {
+  httplib::Client cli("http://127.0.0.1:8787");
+  auto result = httplib::GetStream(cli, "/sse-like");
+
+  ASSERT_TRUE(result);
+
+  std::string combined;
+  for (auto chunk : result.body(256)) {
+    combined += chunk;
+  }
+
+  // Verify all messages received
+  for (int i = 0; i < 5; i++) {
+    std::string expected = "data: message " + std::to_string(i);
+    EXPECT_NE(std::string::npos, combined.find(expected));
+  }
+}

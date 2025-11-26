@@ -1430,6 +1430,18 @@ public:
       read_offset_ += to_read;
       return static_cast<ssize_t>(to_read);
     }
+
+    // Read all remaining content into a string
+    std::string read_all() {
+      if (!is_valid() || !response) { return {}; }
+
+      const auto &body = response->body;
+      if (read_offset_ >= body.size()) { return {}; }
+
+      auto result = body.substr(read_offset_);
+      read_offset_ = body.size();
+      return result;
+    }
   };
 
   // clang-format off
