@@ -1390,6 +1390,72 @@ private:
 #endif
 };
 
+// ClientConnection: Represents ownership of a socket connection
+// Used for true streaming where StreamHandle owns the connection
+struct ClientConnection {
+  socket_t sock = INVALID_SOCKET;
+#ifdef CPPHTTPLIB_OPENSSL_SUPPORT
+  SSL *ssl = nullptr;
+#endif
+
+  bool is_open() const { return sock != INVALID_SOCKET; }
+
+  // Move-only semantics
+  ClientConnection() = default;
+  ~ClientConnection() = default;
+
+  ClientConnection(const ClientConnection &) = delete;
+  ClientConnection &operator=(const ClientConnection &) = delete;
+
+  ClientConnection(ClientConnection &&other) noexcept
+      : sock(other.sock)
+#ifdef CPPHTTPLIB_OPENSSL_SUPPORT
+        ,
+        ssl(other.ssl)
+#endif
+  {
+    other.sock = INVALID_SOCKET;
+#ifdef CPPHTTPLIB_OPENSSL_SUPPORT
+    other.ssl = nullptr;
+#endif
+  }
+
+  ClientConnection &operator=(ClientConnection &&other) noexcept {
+    if (this != &other) {
+      sock = other.sock;
+#ifdef CPPHTTPLIB_OPENSSL_SUPPORT
+      ssl = other.ssl;
+#endif
+      other.sock = INVALID_SOCKET;
+#ifdef CPPHTTPLIB_OPENSSL_SUPPORT
+      other.ssl = nullptr;
+#endif
+    }
+    return *this;
+  }
+};
+
+namespace detail {
+
+// BodyReader: Manages incremental reading of HTTP response body
+// Supports both Content-Length and chunked transfer encoding
+struct BodyReader {
+  Stream *stream = nullptr;
+  size_t content_length = 0;
+  size_t bytes_read = 0;
+  bool chunked = false;
+  bool eof = false;
+
+  // For chunked encoding
+  size_t current_chunk_remaining = 0;
+
+  // Read up to len bytes into buf
+  // Returns bytes read, 0 on EOF, -1 on error
+  ssize_t read(char *buf, size_t len);
+};
+
+} // namespace detail
+
 class ClientImpl {
 public:
   explicit ClientImpl(const std::string &host);
@@ -1406,41 +1472,67 @@ public:
 
   // Streaming handle for reading response body incrementally
   struct StreamHandle {
+    // Common fields
     std::unique_ptr<Response> response;
     Error error = Error::Success;
+
+    // Mode 1: Memory buffer (existing behavior)
     size_t read_offset_ = 0;
+
+    // Mode 2: Socket direct (true streaming)
+    std::unique_ptr<ClientConnection> connection_; // Socket ownership
+    Stream *stream_ = nullptr;                     // Stream for reading
+    detail::BodyReader body_reader_;               // Body reading state
 
     bool is_valid() const {
       return response != nullptr && error == Error::Success;
     }
 
+    // Check if using socket direct mode (true streaming)
+    bool is_socket_direct_mode() const { return stream_ != nullptr; }
+
     // Read up to len bytes into buf, returns number of bytes read (0 at EOF)
-    // NOTE: Current implementation reads from pre-loaded response body.
-    // TODO: Implement true streaming by reading directly from socket stream
-    //       to support large responses without loading entire body into memory.
     ssize_t read(char *buf, size_t len) {
       if (!is_valid() || !response) { return -1; }
 
-      const auto &body = response->body;
-      if (read_offset_ >= body.size()) { return 0; }
+      if (is_socket_direct_mode()) {
+        // Socket direct mode: read from stream via BodyReader
+        return body_reader_.read(buf, len);
+      } else {
+        // Memory buffer mode: read from pre-loaded response body
+        const auto &body = response->body;
+        if (read_offset_ >= body.size()) { return 0; }
 
-      auto remaining = body.size() - read_offset_;
-      auto to_read = (std::min)(len, remaining);
-      std::memcpy(buf, body.data() + read_offset_, to_read);
-      read_offset_ += to_read;
-      return static_cast<ssize_t>(to_read);
+        auto remaining = body.size() - read_offset_;
+        auto to_read = (std::min)(len, remaining);
+        std::memcpy(buf, body.data() + read_offset_, to_read);
+        read_offset_ += to_read;
+        return static_cast<ssize_t>(to_read);
+      }
     }
 
     // Read all remaining content into a string
     std::string read_all() {
       if (!is_valid() || !response) { return {}; }
 
-      const auto &body = response->body;
-      if (read_offset_ >= body.size()) { return {}; }
+      if (is_socket_direct_mode()) {
+        // Socket direct mode: read all from stream
+        std::string result;
+        char buf[8192];
+        ssize_t n;
+        while ((n = body_reader_.read(buf, sizeof(buf))) > 0) {
+          result.append(buf, static_cast<size_t>(n));
+        }
+        return result;
+      } else {
+        // Memory buffer mode
+        const auto &body = response->body;
+        if (read_offset_ >= body.size()) { return {}; }
 
-      auto result = body.substr(read_offset_);
-      read_offset_ = body.size();
-      return result;
+        auto result = body.substr(read_offset_);
+        read_offset_ = body.size();
+        return result;
+      }
     }
   };
 
@@ -3426,68 +3518,6 @@ inline bool is_socket_alive(socket_t sock) {
   char buf[1];
   return detail::read_socket(sock, &buf[0], sizeof(buf), MSG_PEEK) > 0;
 }
-
-// ClientConnection: Represents ownership of a socket connection
-// Used for true streaming where StreamHandle owns the connection
-struct ClientConnection {
-  socket_t sock = INVALID_SOCKET;
-#ifdef CPPHTTPLIB_OPENSSL_SUPPORT
-  SSL *ssl = nullptr;
-#endif
-
-  bool is_open() const { return sock != INVALID_SOCKET; }
-
-  // Move-only semantics
-  ClientConnection() = default;
-  ~ClientConnection() = default;
-
-  ClientConnection(const ClientConnection &) = delete;
-  ClientConnection &operator=(const ClientConnection &) = delete;
-
-  ClientConnection(ClientConnection &&other) noexcept
-      : sock(other.sock)
-#ifdef CPPHTTPLIB_OPENSSL_SUPPORT
-        ,
-        ssl(other.ssl)
-#endif
-  {
-    other.sock = INVALID_SOCKET;
-#ifdef CPPHTTPLIB_OPENSSL_SUPPORT
-    other.ssl = nullptr;
-#endif
-  }
-
-  ClientConnection &operator=(ClientConnection &&other) noexcept {
-    if (this != &other) {
-      sock = other.sock;
-#ifdef CPPHTTPLIB_OPENSSL_SUPPORT
-      ssl = other.ssl;
-#endif
-      other.sock = INVALID_SOCKET;
-#ifdef CPPHTTPLIB_OPENSSL_SUPPORT
-      other.ssl = nullptr;
-#endif
-    }
-    return *this;
-  }
-};
-
-// BodyReader: Manages incremental reading of HTTP response body
-// Supports both Content-Length and chunked transfer encoding
-struct BodyReader {
-  Stream *stream = nullptr;
-  size_t content_length = 0;
-  size_t bytes_read = 0;
-  bool chunked = false;
-  bool eof = false;
-
-  // For chunked encoding
-  size_t current_chunk_remaining = 0;
-
-  // Read up to len bytes into buf
-  // Returns bytes read, 0 on EOF, -1 on error
-  ssize_t read(char *buf, size_t len);
-};
 
 class SocketStream final : public Stream {
 public:

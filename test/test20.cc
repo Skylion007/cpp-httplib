@@ -518,7 +518,7 @@ TEST_F(ChunkedStreamingTest, SSELikeWithGenerator) {
 
 TEST(ClientConnectionTest, StructExists) {
   // Verify ClientConnection struct is defined
-  httplib::detail::ClientConnection conn;
+  httplib::ClientConnection conn;
 
   // Check default state
   EXPECT_EQ(INVALID_SOCKET, conn.sock);
@@ -526,27 +526,27 @@ TEST(ClientConnectionTest, StructExists) {
 }
 
 TEST(ClientConnectionTest, IsOpenReturnsTrueWhenSocketValid) {
-  httplib::detail::ClientConnection conn;
+  httplib::ClientConnection conn;
   conn.sock = 1; // Fake valid socket
 
   EXPECT_TRUE(conn.is_open());
 }
 
 TEST(ClientConnectionTest, MoveConstructor) {
-  httplib::detail::ClientConnection conn1;
+  httplib::ClientConnection conn1;
   conn1.sock = 42;
 
-  httplib::detail::ClientConnection conn2(std::move(conn1));
+  httplib::ClientConnection conn2(std::move(conn1));
 
   EXPECT_EQ(42, conn2.sock);
   EXPECT_EQ(INVALID_SOCKET, conn1.sock); // Moved-from state
 }
 
 TEST(ClientConnectionTest, MoveAssignment) {
-  httplib::detail::ClientConnection conn1;
+  httplib::ClientConnection conn1;
   conn1.sock = 42;
 
-  httplib::detail::ClientConnection conn2;
+  httplib::ClientConnection conn2;
   conn2 = std::move(conn1);
 
   EXPECT_EQ(42, conn2.sock);
@@ -692,4 +692,102 @@ TEST(BodyReaderTest, ReadWithoutStream) {
   auto n = reader.read(buf, sizeof(buf));
 
   EXPECT_EQ(-1, n);
+}
+
+// =============================================================================
+// StreamHandle v2 Tests (Socket Direct Mode)
+// =============================================================================
+
+class StreamHandleV2Test : public ::testing::Test {
+protected:
+  void SetUp() override {
+    mock_stream_ = std::make_unique<MockStream>("Hello from socket!");
+  }
+
+  std::unique_ptr<MockStream> mock_stream_;
+};
+
+TEST_F(StreamHandleV2Test, SocketDirectModeBasic) {
+  // Create StreamHandle with socket direct mode
+  httplib::ClientImpl::StreamHandle handle;
+
+  // Set up response (headers only, body will be read from stream)
+  handle.response = std::make_unique<httplib::Response>();
+  handle.response->status = 200;
+  handle.response->set_header("Content-Length", "18");
+
+  // Set up socket direct mode
+  handle.stream_ = mock_stream_.get();
+  handle.body_reader_.stream = mock_stream_.get();
+  handle.body_reader_.content_length = 18;
+
+  EXPECT_TRUE(handle.is_valid());
+  EXPECT_TRUE(handle.is_socket_direct_mode());
+
+  // Read from socket
+  char buf[32];
+  auto n = handle.read(buf, sizeof(buf));
+  EXPECT_EQ(18, n);
+  EXPECT_EQ(std::string("Hello from socket!"),
+            std::string(buf, static_cast<size_t>(n)));
+
+  // EOF
+  n = handle.read(buf, sizeof(buf));
+  EXPECT_EQ(0, n);
+}
+
+TEST_F(StreamHandleV2Test, SocketDirectModeChunkedRead) {
+  httplib::ClientImpl::StreamHandle handle;
+
+  handle.response = std::make_unique<httplib::Response>();
+  handle.response->status = 200;
+
+  handle.stream_ = mock_stream_.get();
+  handle.body_reader_.stream = mock_stream_.get();
+  handle.body_reader_.content_length = 18;
+
+  // Read in small chunks
+  char buf[5];
+  std::string result;
+
+  ssize_t n;
+  while ((n = handle.read(buf, sizeof(buf))) > 0) {
+    result.append(buf, static_cast<size_t>(n));
+  }
+
+  EXPECT_EQ("Hello from socket!", result);
+  EXPECT_EQ(0, n); // EOF
+}
+
+TEST_F(StreamHandleV2Test, MemoryBufferModeStillWorks) {
+  // Existing behavior: read from response->body
+  httplib::ClientImpl::StreamHandle handle;
+
+  handle.response = std::make_unique<httplib::Response>();
+  handle.response->status = 200;
+  handle.response->body = "Memory buffer content";
+
+  // No stream set = memory buffer mode
+  EXPECT_TRUE(handle.is_valid());
+  EXPECT_FALSE(handle.is_socket_direct_mode());
+
+  char buf[32];
+  auto n = handle.read(buf, sizeof(buf));
+  EXPECT_EQ(21, n);
+  EXPECT_EQ(std::string("Memory buffer content"),
+            std::string(buf, static_cast<size_t>(n)));
+}
+
+TEST_F(StreamHandleV2Test, ReadAllSocketDirect) {
+  httplib::ClientImpl::StreamHandle handle;
+
+  handle.response = std::make_unique<httplib::Response>();
+  handle.response->status = 200;
+
+  handle.stream_ = mock_stream_.get();
+  handle.body_reader_.stream = mock_stream_.get();
+  handle.body_reader_.content_length = 18;
+
+  auto result = handle.read_all();
+  EXPECT_EQ("Hello from socket!", result);
 }
