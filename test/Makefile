@@ -74,7 +74,7 @@ test : test.cc include_httplib.cc ../httplib.h Makefile cert.pem
 	$(CXX) -o $@ -I.. $(CXXFLAGS) test.cc include_httplib.cc $(TEST_ARGS)
 	@file $@
 
-test-stream : test-stream.cc ../httplib.h Makefile
+test-stream : test-stream.cc ../httplib.h Makefile cert.pem
 	$(CXX) -o $@ -I.. -std=c++20 -g -Wall -Wextra -Wtype-limits -Wconversion -Wshadow test-stream.cc $(TEST_ARGS)
 	@file $@
 
