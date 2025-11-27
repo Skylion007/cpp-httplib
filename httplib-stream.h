@@ -279,6 +279,9 @@ public:
   // Get read error (socket direct mode only)
   Error read_error() const { return handle_.get_read_error(); }
 
+  // Check if a read error occurred
+  bool has_read_error() const { return handle_.has_read_error(); }
+
   // Streaming body access - returns Generator for lazy iteration
   Generator<std::string_view> body(size_t chunk_size = 8192) {
     return detail::stream_body(std::move(handle_), chunk_size);

@@ -288,6 +288,10 @@ TEST_F(StreamingServerTest, stream_Get_BodyIteration) {
     body.append(chunk);
   }
   EXPECT_EQ("Hello World!", body);
+
+  // No read error after successful read
+  EXPECT_FALSE(result.has_read_error());
+  EXPECT_EQ(httplib::Error::Success, result.read_error());
 }
 
 TEST_F(StreamingServerTest, stream_Get_ConnectionError) {

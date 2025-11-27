@@ -135,6 +135,8 @@ auto result = httplib::stream::Get(cli, "/path", headers);
 | `status()` | `int` | HTTP status code |
 | `headers()` | `Headers&` | Response headers |
 | `body(chunk_size)` | `Generator<std::string_view>` | Generator yielding body chunks |
+| `read_error()` | `Error` | Get the last read error |
+| `has_read_error()` | `bool` | Check if a read error occurred |
 
 ### Generator Class
 
