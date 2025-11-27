@@ -47,7 +47,7 @@ ssesvr : ssesvr.cc ../httplib.h Makefile
 ssecli : ssecli.cc ../httplib.h Makefile
 	$(CXX) -o ssecli $(CXXFLAGS) ssecli.cc $(OPENSSL_SUPPORT) $(ZLIB_SUPPORT) $(BROTLI_SUPPORT)
 
-ssecli-stream : ssecli-stream.cc ../httplib.h ../httplib-stream.h Makefile
+ssecli-stream : ssecli-stream.cc ../httplib.h ../httplib.h Makefile
 	$(CXX) -o ssecli-stream -std=c++20 -I.. -Wall -Wextra -pthread ssecli-stream.cc $(OPENSSL_SUPPORT) $(ZLIB_SUPPORT) $(BROTLI_SUPPORT)
 
 benchmark : benchmark.cc ../httplib.h Makefile

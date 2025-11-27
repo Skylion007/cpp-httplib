@@ -1,5 +1,5 @@
 //
-//  ssecli20.cc
+//  ssecli-stream.cc
 //
 //  Copyright (c) 2025 Yuji Hirose. All rights reserved.
 //  MIT License
@@ -8,7 +8,7 @@
 //  with automatic reconnection support (similar to JavaScript's EventSource)
 //
 
-#include <httplib-stream.h>
+#include <httplib.h>
 
 #include <chrono>
 #include <iostream>
