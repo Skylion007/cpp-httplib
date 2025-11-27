@@ -11686,3 +11686,331 @@ TEST(ServerRequestParsingTest, RequestWithoutContentLengthOrTransferEncoding) {
                            &resp));
   EXPECT_TRUE(resp.find("HTTP/1.1 200 OK") == 0);
 }
+
+//==============================================================================
+// open_stream() Tests
+//==============================================================================
+
+inline std::string read_all(ClientImpl::StreamHandle &handle) {
+  std::string result;
+  char buf[8192];
+  ssize_t n;
+  while ((n = handle.read(buf, sizeof(buf))) > 0) {
+    result.append(buf, static_cast<size_t>(n));
+  }
+  return result;
+}
+
+// Mock stream for unit tests
+class MockStream : public Stream {
+public:
+  std::string data;
+  size_t pos = 0;
+  ssize_t error_after = -1; // -1 = no error
+
+  explicit MockStream(const std::string &d, ssize_t err = -1)
+      : data(d), error_after(err) {}
+  bool is_readable() const override { return true; }
+  bool wait_readable() const override { return true; }
+  bool wait_writable() const override { return true; }
+  ssize_t read(char *ptr, size_t size) override {
+    if (error_after >= 0 && pos >= static_cast<size_t>(error_after)) return -1;
+    if (pos >= data.size()) return 0;
+    size_t limit =
+        error_after >= 0 ? static_cast<size_t>(error_after) : data.size();
+    size_t to_read = std::min(size, std::min(data.size() - pos, limit - pos));
+    std::memcpy(ptr, data.data() + pos, to_read);
+    pos += to_read;
+    return static_cast<ssize_t>(to_read);
+  }
+  ssize_t write(const char *, size_t) override { return -1; }
+  void get_remote_ip_and_port(std::string &ip, int &port) const override {
+    ip = "127.0.0.1";
+    port = 0;
+  }
+  void get_local_ip_and_port(std::string &ip, int &port) const override {
+    ip = "127.0.0.1";
+    port = 0;
+  }
+  socket_t socket() const override { return INVALID_SOCKET; }
+  time_t duration() const override { return 0; }
+};
+
+TEST(StreamHandleTest, Basic) {
+  ClientImpl::StreamHandle handle;
+  EXPECT_FALSE(handle.is_valid());
+  handle.response = detail::make_unique<Response>();
+  handle.error = Error::Connection;
+  EXPECT_FALSE(handle.is_valid());
+  handle.error = Error::Success;
+  EXPECT_TRUE(handle.is_valid());
+}
+
+TEST(BodyReaderTest, Basic) {
+  MockStream stream("Hello, World!");
+  detail::BodyReader reader;
+  reader.stream = &stream;
+  reader.content_length = 13;
+  char buf[32];
+  EXPECT_EQ(13, reader.read(buf, sizeof(buf)));
+  EXPECT_EQ(0, reader.read(buf, sizeof(buf)));
+  EXPECT_TRUE(reader.eof);
+}
+
+TEST(BodyReaderTest, NoStream) {
+  detail::BodyReader reader;
+  char buf[32];
+  EXPECT_EQ(-1, reader.read(buf, sizeof(buf)));
+  EXPECT_EQ(Error::Connection, reader.last_error);
+}
+
+TEST(BodyReaderTest, Error) {
+  MockStream stream("Hello, World!", 5);
+  detail::BodyReader reader;
+  reader.stream = &stream;
+  reader.content_length = 13;
+  char buf[32];
+  EXPECT_EQ(5, reader.read(buf, sizeof(buf)));
+  EXPECT_EQ(-1, reader.read(buf, sizeof(buf)));
+  EXPECT_EQ(Error::Read, reader.last_error);
+}
+
+TEST(StreamHandleMockTest, SocketDirect) {
+  MockStream stream("Hello from socket!");
+  ClientImpl::StreamHandle handle;
+  handle.response = detail::make_unique<Response>();
+  handle.response->status = 200;
+  handle.stream_ = &stream;
+  handle.body_reader_.stream = &stream;
+  handle.body_reader_.content_length = 18;
+  EXPECT_TRUE(handle.is_socket_direct_mode());
+  EXPECT_EQ("Hello from socket!", read_all(handle));
+}
+
+TEST(StreamHandleMockTest, MemoryBuffer) {
+  ClientImpl::StreamHandle handle;
+  handle.response = detail::make_unique<Response>();
+  handle.response->body = "Memory buffer content";
+  EXPECT_FALSE(handle.is_socket_direct_mode());
+  char buf[32];
+  EXPECT_EQ(21, handle.read(buf, sizeof(buf)));
+}
+
+TEST(StreamHandleMockTest, Error) {
+  MockStream stream("Hello World", 5);
+  ClientImpl::StreamHandle handle;
+  handle.response = detail::make_unique<Response>();
+  handle.stream_ = &stream;
+  handle.body_reader_.stream = &stream;
+  handle.body_reader_.content_length = 11;
+  char buf[32];
+  handle.read(buf, sizeof(buf));
+  handle.read(buf, sizeof(buf));
+  EXPECT_EQ(Error::Read, handle.get_read_error());
+}
+
+class OpenStreamTest : public ::testing::Test {
+protected:
+  void SetUp() override {
+    svr_.Get("/hello", [](const Request &, Response &res) {
+      res.set_content("Hello World!", "text/plain");
+    });
+    svr_.Get("/large", [](const Request &, Response &res) {
+      res.set_content(std::string(10000, 'X'), "text/plain");
+    });
+    svr_.Get("/chunked", [](const Request &, Response &res) {
+      res.set_chunked_content_provider("text/plain",
+                                       [](size_t offset, DataSink &sink) {
+                                         if (offset < 15) {
+                                           sink.write("chunk", 5);
+                                           return true;
+                                         }
+                                         sink.done();
+                                         return true;
+                                       });
+    });
+    svr_.Get("/compressible", [](const Request &, Response &res) {
+      res.set_chunked_content_provider("text/plain", [](size_t offset,
+                                                        DataSink &sink) {
+        if (offset < 100 * 1024) {
+          std::string chunk(std::min(size_t(8192), 100 * 1024 - offset), 'A');
+          sink.write(chunk.data(), chunk.size());
+          return true;
+        }
+        sink.done();
+        return true;
+      });
+    });
+    thread_ = std::thread([this]() { svr_.listen("127.0.0.1", 8787); });
+    svr_.wait_until_ready();
+  }
+  void TearDown() override {
+    svr_.stop();
+    if (thread_.joinable()) thread_.join();
+  }
+  Server svr_;
+  std::thread thread_;
+};
+
+TEST_F(OpenStreamTest, Basic) {
+  Client cli("127.0.0.1", 8787);
+  auto handle = cli.open_stream("GET", "/hello");
+  EXPECT_TRUE(handle.is_valid());
+  EXPECT_TRUE(handle.is_socket_direct_mode());
+  EXPECT_EQ("Hello World!", read_all(handle));
+}
+
+TEST_F(OpenStreamTest, SmallBuffer) {
+  Client cli("127.0.0.1", 8787);
+  auto handle = cli.open_stream("GET", "/hello");
+  std::string result;
+  char buf[4];
+  ssize_t n;
+  while ((n = handle.read(buf, sizeof(buf))) > 0)
+    result.append(buf, n);
+  EXPECT_EQ("Hello World!", result);
+}
+
+TEST_F(OpenStreamTest, Large) {
+  Client cli("127.0.0.1", 8787);
+  auto handle = cli.open_stream("GET", "/large");
+  EXPECT_EQ(10000u, read_all(handle).size());
+}
+
+TEST_F(OpenStreamTest, ConnectionError) {
+  Client cli("127.0.0.1", 9999);
+  auto handle = cli.open_stream("GET", "/hello");
+  EXPECT_FALSE(handle.is_valid());
+}
+
+TEST_F(OpenStreamTest, Chunked) {
+  Client cli("127.0.0.1", 8787);
+  auto handle = cli.open_stream("GET", "/chunked");
+  EXPECT_TRUE(handle.body_reader_.chunked);
+  EXPECT_EQ("chunkchunkchunk", read_all(handle));
+}
+
+#ifdef CPPHTTPLIB_ZLIB_SUPPORT
+TEST_F(OpenStreamTest, Gzip) {
+  Client cli("127.0.0.1", 8787);
+  auto handle = cli.open_stream("GET", "/compressible", {},
+                                {{"Accept-Encoding", "gzip"}});
+  EXPECT_EQ("gzip", handle.response->get_header_value("Content-Encoding"));
+  EXPECT_EQ(100u * 1024u, read_all(handle).size());
+}
+#endif
+
+#ifdef CPPHTTPLIB_BROTLI_SUPPORT
+TEST_F(OpenStreamTest, Brotli) {
+  Client cli("127.0.0.1", 8787);
+  auto handle =
+      cli.open_stream("GET", "/compressible", {}, {{"Accept-Encoding", "br"}});
+  EXPECT_EQ("br", handle.response->get_header_value("Content-Encoding"));
+  EXPECT_EQ(100u * 1024u, read_all(handle).size());
+}
+#endif
+
+#ifdef CPPHTTPLIB_ZSTD_SUPPORT
+TEST_F(OpenStreamTest, Zstd) {
+  Client cli("127.0.0.1", 8787);
+  auto handle = cli.open_stream("GET", "/compressible", {},
+                                {{"Accept-Encoding", "zstd"}});
+  EXPECT_EQ("zstd", handle.response->get_header_value("Content-Encoding"));
+  EXPECT_EQ(100u * 1024u, read_all(handle).size());
+}
+#endif
+
+#ifdef CPPHTTPLIB_OPENSSL_SUPPORT
+class SSLOpenStreamTest : public ::testing::Test {
+protected:
+  SSLOpenStreamTest() : svr_("cert.pem", "key.pem") {}
+  void SetUp() override {
+    svr_.Get("/hello", [](const Request &, Response &res) {
+      res.set_content("Hello SSL World!", "text/plain");
+    });
+    svr_.Get("/chunked", [](const Request &, Response &res) {
+      res.set_chunked_content_provider("text/plain",
+                                       [](size_t offset, DataSink &sink) {
+                                         if (offset < 15) {
+                                           sink.write("chunk", 5);
+                                           return true;
+                                         }
+                                         sink.done();
+                                         return true;
+                                       });
+    });
+    svr_.Post("/echo", [](const Request &req, Response &res) {
+      res.set_content(req.body, req.get_header_value("Content-Type"));
+    });
+    svr_.Post("/chunked-response", [](const Request &req, Response &res) {
+      std::string body = req.body;
+      res.set_chunked_content_provider(
+          "text/plain", [body](size_t offset, DataSink &sink) {
+            if (offset < body.size()) {
+              sink.write(body.data() + offset, body.size() - offset);
+            }
+            sink.done();
+            return true;
+          });
+    });
+    thread_ = std::thread([this]() { svr_.listen("127.0.0.1", 8788); });
+    svr_.wait_until_ready();
+  }
+  void TearDown() override {
+    svr_.stop();
+    if (thread_.joinable()) thread_.join();
+  }
+  SSLServer svr_;
+  std::thread thread_;
+};
+
+TEST_F(SSLOpenStreamTest, Basic) {
+  SSLClient cli("127.0.0.1", 8788);
+  cli.enable_server_certificate_verification(false);
+  auto handle = cli.open_stream("GET", "/hello");
+  ASSERT_TRUE(handle.is_valid());
+  EXPECT_TRUE(handle.is_socket_direct_mode());
+  EXPECT_EQ("Hello SSL World!", read_all(handle));
+}
+
+TEST_F(SSLOpenStreamTest, Chunked) {
+  SSLClient cli("127.0.0.1", 8788);
+  cli.enable_server_certificate_verification(false);
+
+  auto handle = cli.open_stream("GET", "/chunked");
+
+  ASSERT_TRUE(handle.is_valid()) << "Error: " << static_cast<int>(handle.error);
+  EXPECT_TRUE(handle.body_reader_.chunked);
+
+  auto body = read_all(handle);
+  EXPECT_EQ("chunkchunkchunk", body);
+}
+
+TEST_F(SSLOpenStreamTest, Post) {
+  SSLClient cli("127.0.0.1", 8788);
+  cli.enable_server_certificate_verification(false);
+
+  auto handle =
+      cli.open_stream("POST", "/echo", {}, {}, "Hello SSL POST", "text/plain");
+
+  ASSERT_TRUE(handle.is_valid()) << "Error: " << static_cast<int>(handle.error);
+  EXPECT_EQ(200, handle.response->status);
+
+  auto body = read_all(handle);
+  EXPECT_EQ("Hello SSL POST", body);
+}
+
+TEST_F(SSLOpenStreamTest, PostChunked) {
+  SSLClient cli("127.0.0.1", 8788);
+  cli.enable_server_certificate_verification(false);
+
+  auto handle = cli.open_stream("POST", "/chunked-response", {}, {},
+                                "Chunked SSL Data", "text/plain");
+
+  ASSERT_TRUE(handle.is_valid());
+  EXPECT_EQ(200, handle.response->status);
+
+  auto body = read_all(handle);
+  EXPECT_EQ("Chunked SSL Data", body);
+}
+#endif // CPPHTTPLIB_OPENSSL_SUPPORT
