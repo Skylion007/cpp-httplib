@@ -277,6 +277,8 @@ target_link_libraries(${PROJECT_NAME} ${_INTERFACE_OR_PUBLIC}
 		$<$<PLATFORM_ID:Windows>:crypt32>
 		# Needed for API from MacOS Security framework
 		"$<$<AND:$<PLATFORM_ID:Darwin>,$<BOOL:${HTTPLIB_IS_USING_OPENSSL}>,$<BOOL:${HTTPLIB_USE_CERTS_FROM_MACOSX_KEYCHAIN}>>:-framework CoreFoundation -framework Security>"
+		# Needed for non-blocking getaddrinfo on macOS
+		"$<$<AND:$<PLATFORM_ID:Darwin>,$<BOOL:${HTTPLIB_USE_NON_BLOCKING_GETADDRINFO}>>:-framework CoreFoundation -framework CFNetwork>"
 		# Can't put multiple targets in a single generator expression or it bugs out.
 		$<$<BOOL:${HTTPLIB_IS_USING_BROTLI}>:Brotli::common>
 		$<$<BOOL:${HTTPLIB_IS_USING_BROTLI}>:Brotli::encoder>

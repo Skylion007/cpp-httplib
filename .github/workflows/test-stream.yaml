@@ -1,0 +1,114 @@
+name: test-stream
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      gtest_filter:
+        description: 'Google Test filter'
+      test_linux:
+        description: 'Test on Linux'
+        type: boolean
+        default: true
+      test_macos:
+        description: 'Test on MacOS'
+        type: boolean
+        default: true
+      test_windows:
+        description: 'Test on Windows'
+        type: boolean
+        default: true
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref || github.run_id }}
+  cancel-in-progress: true
+
+env:
+  GTEST_FILTER: ${{ github.event.inputs.gtest_filter || '*' }}
+
+jobs:
+  ubuntu:
+    runs-on: ubuntu-24.04
+    if: >
+      (github.event_name == 'push') ||
+      (github.event_name == 'pull_request'  &&
+       github.event.pull_request.head.repo.full_name != github.event.pull_request.base.repo.full_name) ||
+      (github.event_name == 'workflow_dispatch' && github.event.inputs.test_linux == 'true')
+    steps:
+      - name: checkout
+        uses: actions/checkout@v4
+      - name: install libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libssl-dev libcurl4-openssl-dev \
+            zlib1g-dev libbrotli-dev libzstd-dev
+      - name: build and run C++20 streaming tests
+        run: cd test && make test-stream && ./test-stream --gtest_filter="${GTEST_FILTER}"
+
+  macos:
+    runs-on: macos-latest
+    if: >
+      (github.event_name == 'push') ||
+      (github.event_name == 'pull_request'  &&
+       github.event.pull_request.head.repo.full_name != github.event.pull_request.base.repo.full_name) ||
+      (github.event_name == 'workflow_dispatch' && github.event.inputs.test_macos == 'true')
+    steps:
+      - name: checkout
+        uses: actions/checkout@v4
+      - name: build and run C++20 streaming tests
+        run: cd test && make test-stream && ./test-stream --gtest_filter="${GTEST_FILTER}"
+
+  windows:
+    runs-on: windows-latest
+    if: >
+      (github.event_name == 'push') ||
+      (github.event_name == 'pull_request'  &&
+       github.event.pull_request.head.repo.full_name != github.event.pull_request.base.repo.full_name) ||
+      (github.event_name == 'workflow_dispatch' && github.event.inputs.test_windows == 'true')
+    strategy:
+      matrix:
+        config:
+        - with_ssl: false
+          name: without SSL
+        - with_ssl: true
+          name: with SSL
+    name: windows ${{ matrix.config.name }}
+    steps:
+    - name: Prepare Git for Checkout on Windows
+      run: |
+        git config --global core.autocrlf false
+        git config --global core.eol lf
+    - name: Checkout
+      uses: actions/checkout@v4
+    - name: Export GitHub Actions cache environment variables
+      uses: actions/github-script@v7
+      with:
+        script: |
+          core.exportVariable('ACTIONS_CACHE_URL', process.env.ACTIONS_CACHE_URL || '');
+          core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '');
+    - name: Setup msbuild on windows
+      uses: microsoft/setup-msbuild@v2
+    - name: Install vcpkg dependencies
+      run: vcpkg install gtest curl zlib brotli zstd
+    - name: Install OpenSSL
+      if: ${{ matrix.config.with_ssl }}
+      run: choco install openssl
+    - name: Configure CMake ${{ matrix.config.name }}
+      run: >
+        cmake -B build -S .
+        -DCMAKE_BUILD_TYPE=Release
+        -DCMAKE_TOOLCHAIN_FILE=${{ env.VCPKG_ROOT }}/scripts/buildsystems/vcpkg.cmake
+        -DHTTPLIB_TEST=ON
+        -DHTTPLIB_REQUIRE_ZLIB=ON
+        -DHTTPLIB_REQUIRE_BROTLI=ON
+        -DHTTPLIB_REQUIRE_ZSTD=ON
+        -DHTTPLIB_REQUIRE_OPENSSL=${{ matrix.config.with_ssl && 'ON' || 'OFF' }}
+    - name: Build ${{ matrix.config.name }}
+      run: cmake --build build --config Release -- /v:m /clp:ShowCommandLine
+    - name: Run C++20 streaming tests ${{ matrix.config.name }}
+      run: ctest --output-on-failure --test-dir build -C Release -R "httplib-test-stream"
+
+    env:
+      VCPKG_ROOT: "C:/vcpkg"
+      VCPKG_BINARY_SOURCES: "clear;x-gha,readwrite"

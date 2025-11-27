@@ -31,6 +31,28 @@ target_compile_options(httplib-test PRIVATE "$<$<CXX_COMPILER_ID:MSVC>:/utf-8;/b
 target_link_libraries(httplib-test PRIVATE httplib GTest::gtest_main CURL::libcurl)
 gtest_discover_tests(httplib-test)
 
+# C++20 streaming API tests
+if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang|AppleClang|MSVC")
+    # Check for C++20 support
+    include(CheckCXXCompilerFlag)
+    check_cxx_compiler_flag("-std=c++20" COMPILER_SUPPORTS_CXX20)
+    if(MSVC)
+        set(COMPILER_SUPPORTS_CXX20 TRUE)
+    endif()
+
+    if(COMPILER_SUPPORTS_CXX20)
+        add_executable(httplib-test-stream test-stream.cc)
+        target_compile_features(httplib-test-stream PRIVATE cxx_std_20)
+        target_compile_options(httplib-test-stream PRIVATE
+            "$<$<CXX_COMPILER_ID:MSVC>:/utf-8;/bigobj>"
+        )
+        target_link_libraries(httplib-test-stream PRIVATE httplib GTest::gtest_main)
+        gtest_discover_tests(httplib-test-stream)
+    else()
+        message(STATUS "C++20 not supported, skipping test-stream")
+    endif()
+endif()
+
 file(
     COPY www www2 www3 ca-bundle.crt image.jpg
     DESTINATION ${CMAKE_CURRENT_BINARY_DIR}
