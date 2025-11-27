@@ -1,13 +1,11 @@
 //==============================================================================
-// C++20 stream::* API Tests (httplib-stream.h)
+// C++20 stream::* API Tests
 // These tests require C++20 and use the Generator-based streaming API.
 // For open_stream() tests, see test.cc.
 //==============================================================================
 
 #include <gtest/gtest.h>
 
-#define CPPHTTPLIB_OPENSSL_SUPPORT
-#include "../httplib-stream.h"
 #include "../httplib.h"
 
 inline std::string read_body(httplib::stream::Result &&result) {

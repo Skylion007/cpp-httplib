@@ -11867,7 +11867,7 @@ TEST_F(OpenStreamTest, SmallBuffer) {
   char buf[4];
   ssize_t n;
   while ((n = handle.read(buf, sizeof(buf))) > 0)
-    result.append(buf, n);
+    result.append(buf, static_cast<size_t>(n));
   EXPECT_EQ("Hello World!", result);
 }
 

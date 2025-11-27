@@ -47,7 +47,8 @@ REALPATH = $(shell which grealpath 2>/dev/null || which realpath 2>/dev/null)
 STYLE_CHECK_FILES = $(filter-out httplib.h httplib.cc, \
 	$(wildcard example/*.h example/*.cc fuzzing/*.h fuzzing/*.cc *.h *.cc ../httplib.h))
 
-all : test test_split
+all : test test-stream test_split
+	./test-stream
 	./test
 
 proxy : test_proxy

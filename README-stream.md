@@ -48,12 +48,12 @@ cpp-httplib provides multiple API layers for different use cases:
 ## Requirements
 
 - C++20 compiler with coroutine support
-- Include `httplib-stream.h` (which includes `httplib.h`)
+- Include `httplib.h` and compile with `-std=c++20`
 
 ## Quick Start
 
 ```cpp
-#include "httplib-stream.h"
+#include "httplib.h"
 
 int main() {
     httplib::Client cli("http://localhost:8080");
@@ -112,10 +112,10 @@ if (handle.is_valid()) {
 
 ### High-Level API: `stream::Get()` and `stream::Result`
 
-The `httplib-stream.h` header provides a more ergonomic API using C++20 coroutines.
+The `httplib.h` header provides a more ergonomic API using C++20 coroutines (requires C++20).
 
 ```cpp
-#include "httplib-stream.h"
+#include "httplib.h"
 
 httplib::Client cli("http://localhost:8080");
 
@@ -155,7 +155,7 @@ for (auto chunk : result.body(1024)) {
 ### Example 1: SSE (Server-Sent Events) Client
 
 ```cpp
-#include "httplib-stream.h"
+#include "httplib.h"
 #include <iostream>
 
 int main() {
@@ -177,7 +177,7 @@ For a complete SSE client with auto-reconnection and event parsing, see `example
 ### Example 2: LLM Streaming Response
 
 ```cpp
-#include "httplib-stream.h"
+#include "httplib.h"
 #include <iostream>
 
 int main() {
@@ -203,7 +203,7 @@ int main() {
 ### Example 3: Large File Download with Progress
 
 ```cpp
-#include "httplib-stream.h"
+#include "httplib.h"
 #include <fstream>
 #include <iostream>
 
@@ -319,6 +319,5 @@ clang++ -std=c++20 -o myapp myapp.cpp -lpthread -lssl -lcrypto
 ## Related
 
 - [Issue #2269](https://github.com/yhirose/cpp-httplib/issues/2269) - Original feature request
-- [httplib.h](./httplib.h) - Main library
-- [httplib-stream.h](./httplib-stream.h) - C++20 extensions
+- [httplib.h](./httplib.h) - Main library (includes C++20 streaming API)
 - [example/ssecli-stream.cc](./example/ssecli-stream.cc) - SSE client with auto-reconnection
