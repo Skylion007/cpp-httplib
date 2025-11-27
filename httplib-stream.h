@@ -12,7 +12,7 @@
 //  When C++23 is adopted, this header can be simplified:
 //  - Replace custom Generator<T> with std::generator<T> from <generator>
 //  - The Generator interface is designed to be compatible with std::generator
-//  - StreamingResult and GetStream() can remain unchanged
+//  - stream::Result and stream::Get() can remain unchanged
 //
 
 #ifndef CPPHTTPLIB_HTTPLIB20_H
@@ -219,14 +219,14 @@ inline Generator<std::string_view> stream_body(ClientImpl::StreamHandle handle,
 } // namespace detail
 
 //------------------------------------------------------------------------------
-// StreamingResult - High-level wrapper for streaming HTTP responses
+// stream namespace - C++20 streaming API
 //------------------------------------------------------------------------------
 //
 // Provides a convenient interface for streaming HTTP response bodies.
-// Supports both memory-buffered and socket-direct streaming modes.
+// Data is read directly from the socket without buffering.
 //
 // Usage:
-//   auto result = httplib::GetStream(client, "/large-file");
+//   auto result = httplib::stream::Get(client, "/large-file");
 //   if (result) {
 //     for (auto chunk : result.body()) {
 //       process(chunk);
@@ -234,18 +234,21 @@ inline Generator<std::string_view> stream_body(ClientImpl::StreamHandle handle,
 //   }
 //
 
-class StreamingResult {
-public:
-  StreamingResult() = default;
+namespace stream {
 
-  explicit StreamingResult(ClientImpl::StreamHandle &&handle)
+// Result - wrapper for streaming HTTP responses
+class Result {
+public:
+  Result() = default;
+
+  explicit Result(ClientImpl::StreamHandle &&handle)
       : handle_(std::move(handle)) {}
 
   // Move-only semantics
-  StreamingResult(StreamingResult &&) = default;
-  StreamingResult &operator=(StreamingResult &&) = default;
-  StreamingResult(const StreamingResult &) = delete;
-  StreamingResult &operator=(const StreamingResult &) = delete;
+  Result(Result &&) = default;
+  Result &operator=(Result &&) = default;
+  Result(const Result &) = delete;
+  Result &operator=(const Result &) = delete;
 
   // Validity check
   bool is_valid() const { return handle_.is_valid(); }
@@ -290,10 +293,10 @@ private:
 };
 
 //------------------------------------------------------------------------------
-// Free functions for streaming HTTP requests
+// Streaming HTTP request functions
 //------------------------------------------------------------------------------
 //
-// GetStream reads response body directly from the socket without buffering
+// stream::Get reads response body directly from the socket without buffering
 // the entire response in memory. This is ideal for:
 //   - Large file downloads
 //   - Server-Sent Events (SSE)
@@ -304,30 +307,22 @@ private:
 // where connection reuse matters, use client.Get() instead.
 //
 // Usage:
-//   auto result = httplib::GetStream(client, "/huge-file");
+//   auto result = httplib::stream::Get(client, "/huge-file");
 //   for (auto chunk : result.body()) {
 //     write_to_file(chunk);
 //   }
 //
 
-inline StreamingResult GetStream(Client &cli, const std::string &path) {
-  return StreamingResult{cli.open_stream(path)};
+inline Result Get(Client &cli, const std::string &path) {
+  return Result{cli.open_stream(path)};
 }
 
-inline StreamingResult GetStream(Client &cli, const std::string &path,
-                                 const Headers &headers) {
-  return StreamingResult{cli.open_stream(path, headers)};
+inline Result Get(Client &cli, const std::string &path,
+                  const Headers &headers) {
+  return Result{cli.open_stream(path, headers)};
 }
 
-// Overloads for ClientImpl (direct use without Client wrapper)
-inline StreamingResult GetStream(ClientImpl &cli, const std::string &path) {
-  return StreamingResult{cli.open_stream(path)};
-}
-
-inline StreamingResult GetStream(ClientImpl &cli, const std::string &path,
-                                 const Headers &headers) {
-  return StreamingResult{cli.open_stream(path, headers)};
-}
+} // namespace stream
 
 } // namespace httplib
 

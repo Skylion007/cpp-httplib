@@ -202,29 +202,29 @@ TEST_F(StreamingServerTest, ReadSmallBuffer) {
 
 #include "../httplib-stream.h"
 
-TEST_F(StreamingServerTest, GetStreamReturnsStreamingResult) {
+TEST_F(StreamingServerTest, stream_Get_ReturnsResult) {
   httplib::Client cli("localhost", 8787);
 
-  auto result = httplib::GetStream(cli, "/hello");
+  auto result = httplib::stream::Get(cli, "/hello");
 
   EXPECT_TRUE(result.is_valid());
   EXPECT_EQ(200, result.status());
 }
 
-TEST_F(StreamingServerTest, GetStreamWithHeaders) {
+TEST_F(StreamingServerTest, stream_Get_WithHeaders) {
   httplib::Client cli("localhost", 8787);
 
-  auto result = httplib::GetStream(cli, "/hello");
+  auto result = httplib::stream::Get(cli, "/hello");
 
   ASSERT_TRUE(result.is_valid());
   EXPECT_TRUE(result.has_header("Content-Type"));
   EXPECT_EQ("text/plain", result.get_header_value("Content-Type"));
 }
 
-TEST_F(StreamingServerTest, GetStreamBodyGenerator) {
+TEST_F(StreamingServerTest, stream_Get_BodyGenerator) {
   httplib::Client cli("localhost", 8787);
 
-  auto result = httplib::GetStream(cli, "/hello");
+  auto result = httplib::stream::Get(cli, "/hello");
   ASSERT_TRUE(result.is_valid());
 
   std::string body;
@@ -235,10 +235,10 @@ TEST_F(StreamingServerTest, GetStreamBodyGenerator) {
   EXPECT_EQ("Hello World!", body);
 }
 
-TEST_F(StreamingServerTest, GetStreamBodyGeneratorSmallChunks) {
+TEST_F(StreamingServerTest, stream_Get_BodyGeneratorSmallChunks) {
   httplib::Client cli("localhost", 8787);
 
-  auto result = httplib::GetStream(cli, "/hello");
+  auto result = httplib::stream::Get(cli, "/hello");
   ASSERT_TRUE(result.is_valid());
 
   std::string body;
@@ -252,29 +252,29 @@ TEST_F(StreamingServerTest, GetStreamBodyGeneratorSmallChunks) {
   EXPECT_GT(chunk_count, 1u); // Should have multiple chunks
 }
 
-TEST_F(StreamingServerTest, GetStreamReadAll) {
+TEST_F(StreamingServerTest, stream_Get_ReadAll) {
   httplib::Client cli("localhost", 8787);
 
-  auto result = httplib::GetStream(cli, "/hello");
+  auto result = httplib::stream::Get(cli, "/hello");
   ASSERT_TRUE(result.is_valid());
 
   std::string body = result.read_all();
   EXPECT_EQ("Hello World!", body);
 }
 
-TEST_F(StreamingServerTest, GetStreamConnectionError) {
+TEST_F(StreamingServerTest, stream_Get_ConnectionError) {
   httplib::Client cli("localhost", 9999); // No server
 
-  auto result = httplib::GetStream(cli, "/hello");
+  auto result = httplib::stream::Get(cli, "/hello");
 
   EXPECT_FALSE(result.is_valid());
   EXPECT_NE(httplib::Error::Success, result.error());
 }
 
-TEST_F(StreamingServerTest, GetStream404) {
+TEST_F(StreamingServerTest, stream_Get_404) {
   httplib::Client cli("localhost", 8787);
 
-  auto result = httplib::GetStream(cli, "/nonexistent");
+  auto result = httplib::stream::Get(cli, "/nonexistent");
 
   EXPECT_TRUE(result.is_valid());
   EXPECT_EQ(404, result.status());
@@ -459,7 +459,7 @@ TEST_F(ChunkedStreamingTest, SSELikeStreaming) {
 
 TEST_F(ChunkedStreamingTest, GeneratorWithChunkedResponse) {
   httplib::Client cli("http://127.0.0.1:8787");
-  auto result = httplib::GetStream(cli, "/chunked");
+  auto result = httplib::stream::Get(cli, "/chunked");
 
   ASSERT_TRUE(result);
   EXPECT_EQ(200, result.status());
@@ -479,7 +479,7 @@ TEST_F(ChunkedStreamingTest, GeneratorWithChunkedResponse) {
 
 TEST_F(ChunkedStreamingTest, GeneratorWithLargeResponse) {
   httplib::Client cli("http://127.0.0.1:8787");
-  auto result = httplib::GetStream(cli, "/large");
+  auto result = httplib::stream::Get(cli, "/large");
 
   ASSERT_TRUE(result);
 
@@ -496,7 +496,7 @@ TEST_F(ChunkedStreamingTest, GeneratorWithLargeResponse) {
 
 TEST_F(ChunkedStreamingTest, SSELikeWithGenerator) {
   httplib::Client cli("http://127.0.0.1:8787");
-  auto result = httplib::GetStream(cli, "/sse-like");
+  auto result = httplib::stream::Get(cli, "/sse-like");
 
   ASSERT_TRUE(result);
 

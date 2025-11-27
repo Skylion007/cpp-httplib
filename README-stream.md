@@ -11,6 +11,34 @@ The C++20 streaming API allows you to process HTTP response bodies chunk by chun
 - **Large file downloads** with progress tracking
 - **Reverse proxy implementations**
 
+## API Layers
+
+cpp-httplib provides multiple API layers for different use cases:
+
+```text
+┌─────────────────────────────────────────────┐
+│  SSEClient (planned)                        │  ← SSE-specific, parsed events
+│  - on_message(), on_event()                 │
+│  - Auto-reconnect, Last-Event-ID            │
+├─────────────────────────────────────────────┤
+│  stream::Get() / stream::Result             │  ← C++20, Generator-based
+│  - for (auto chunk : result.body())         │
+├─────────────────────────────────────────────┤
+│  open_stream() / StreamHandle               │  ← General-purpose streaming
+│  - handle.read(buf, len)                    │
+├─────────────────────────────────────────────┤
+│  Client::Get()                              │  ← Traditional, full buffering
+└─────────────────────────────────────────────┘
+```
+
+| Use Case | Recommended API |
+|----------|----------------|
+| SSE with auto-reconnect | SSEClient (planned) or `ssecli-stream.cc` example |
+| LLM streaming (JSON Lines) | `stream::Get()` |
+| Large file download | `stream::Get()` or `open_stream()` |
+| Reverse proxy | `open_stream()` |
+| Small responses with Keep-Alive | `Client::Get()` |
+
 ## Requirements
 
 - C++20 compiler with coroutine support
@@ -25,7 +53,7 @@ int main() {
     httplib::Client cli("http://localhost:8080");
     
     // Get streaming response
-    auto result = httplib::GetStream(cli, "/stream");
+    auto result = httplib::stream::Get(cli, "/stream");
     
     if (result) {
         // Process response body in chunks
@@ -80,7 +108,7 @@ if (handle.is_valid()) {
 | `read(buf, len)` | `ssize_t` | Read up to `len` bytes directly from socket |
 | `read_all()` | `std::string` | Read all remaining content |
 
-### High-Level API: `GetStream()` and `StreamingResult`
+### High-Level API: `stream::Get()` and `stream::Result`
 
 The `httplib-stream.h` header provides a more ergonomic API using C++20 coroutines.
 
@@ -90,14 +118,14 @@ The `httplib-stream.h` header provides a more ergonomic API using C++20 coroutin
 httplib::Client cli("http://localhost:8080");
 
 // Simple GET
-auto result = httplib::GetStream(cli, "/path");
+auto result = httplib::stream::Get(cli, "/path");
 
 // GET with custom headers
 httplib::Headers headers = {{"Authorization", "Bearer token"}};
-auto result = httplib::GetStream(cli, "/path", headers);
+auto result = httplib::stream::Get(cli, "/path", headers);
 ```
 
-#### StreamingResult Members
+#### stream::Result Members
 
 | Member | Type | Description |
 |--------|------|-------------|
@@ -130,7 +158,7 @@ for (auto chunk : result.body(1024)) {
 int main() {
     httplib::Client cli("http://localhost:1234");
     
-    auto result = httplib::GetStream(cli, "/events");
+    auto result = httplib::stream::Get(cli, "/events");
     if (!result) { return 1; }
     
     for (auto chunk : result.body()) {
@@ -152,7 +180,7 @@ For a complete SSE client with auto-reconnection and event parsing, see `example
 int main() {
     httplib::Client cli("http://localhost:11434");  // Ollama
     
-    auto result = httplib::GetStream(cli, "/api/generate");
+    auto result = httplib::stream::Get(cli, "/api/generate");
     
     if (result && result.status() == 200) {
         for (auto chunk : result.body()) {
@@ -178,7 +206,7 @@ int main() {
 
 int main() {
     httplib::Client cli("http://example.com");
-    auto result = httplib::GetStream(cli, "/large-file.zip");
+    auto result = httplib::stream::Get(cli, "/large-file.zip");
     
     if (!result || result.status() != 200) {
         std::cerr << "Download failed\n";
@@ -236,8 +264,8 @@ svr.listen("0.0.0.0", 3000);
 
 ## Comparison with Existing APIs
 
-| Feature | `Client::Get()` | `open_stream()` | `GetStream()` |
-|---------|----------------|-----------------|---------------|
+| Feature | `Client::Get()` | `open_stream()` | `stream::Get()` |
+|---------|----------------|-----------------|----------------|
 | Headers available | After complete | Immediately | Immediately |
 | Body reading | All at once | Direct from socket | Generator-based |
 | Memory usage | Full body in RAM | Minimal (controlled) | Minimal (controlled) |
@@ -259,7 +287,7 @@ svr.listen("0.0.0.0", 3000);
 
 ### Keep-Alive Behavior
 
-The streaming API (`GetStream()` / `open_stream()`) takes ownership of the socket connection for the duration of the stream. This means:
+The streaming API (`stream::Get()` / `open_stream()`) takes ownership of the socket connection for the duration of the stream. This means:
 
 - **Keep-Alive is not supported** for streaming connections
 - The socket is closed when `StreamHandle` is destroyed
@@ -267,7 +295,7 @@ The streaming API (`GetStream()` / `open_stream()`) takes ownership of the socke
 
 ```cpp
 // Use for streaming (no Keep-Alive)
-auto stream = httplib::GetStream(cli, "/large-stream");
+auto stream = httplib::stream::Get(cli, "/large-stream");
 
 // Use for Keep-Alive connections
 auto result = cli.Get("/api/data");  // Connection can be reused

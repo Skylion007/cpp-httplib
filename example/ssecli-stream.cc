@@ -125,7 +125,7 @@ int main(void) {
     }
 
     // Open streaming connection
-    auto result = httplib::GetStream(cli, path, headers);
+    auto result = httplib::stream::Get(cli, path, headers);
 
     //--------------------------------------------------------------------------
     // Connection error handling
