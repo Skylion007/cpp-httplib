@@ -56,6 +56,16 @@ protected:
       res.set_content("Hello World!", "text/plain");
     });
 
+    server_.Get("/echo-params",
+                [](const httplib::Request &req, httplib::Response &res) {
+                  std::string result;
+                  for (const auto &p : req.params) {
+                    if (!result.empty()) result += "&";
+                    result += p.first + "=" + p.second;
+                  }
+                  res.set_content(result, "text/plain");
+                });
+
     server_.Get(
         "/chunked", [](const httplib::Request &, httplib::Response &res) {
           res.set_chunked_content_provider(
@@ -278,6 +288,34 @@ TEST_F(StreamingServerTest, stream_Get_404) {
 
   EXPECT_TRUE(result.is_valid());
   EXPECT_EQ(404, result.status());
+}
+
+TEST_F(StreamingServerTest, stream_Get_WithParams) {
+  httplib::Client cli("localhost", 8787);
+  httplib::Params params = {{"foo", "bar"}, {"baz", "123"}};
+
+  auto result = httplib::stream::Get(cli, "/echo-params", params);
+
+  ASSERT_TRUE(result.is_valid());
+  EXPECT_EQ(200, result.status());
+
+  std::string body = result.read_all();
+  EXPECT_TRUE(body.find("foo=bar") != std::string::npos);
+  EXPECT_TRUE(body.find("baz=123") != std::string::npos);
+}
+
+TEST_F(StreamingServerTest, stream_Get_WithParamsAndHeaders) {
+  httplib::Client cli("localhost", 8787);
+  httplib::Params params = {{"key", "value"}};
+  httplib::Headers headers = {{"X-Custom-Header", "test"}};
+
+  auto result = httplib::stream::Get(cli, "/echo-params", params, headers);
+
+  ASSERT_TRUE(result.is_valid());
+  EXPECT_EQ(200, result.status());
+
+  std::string body = result.read_all();
+  EXPECT_TRUE(body.find("key=value") != std::string::npos);
 }
 
 TEST(GeneratorTest, EmptyGenerator) {

@@ -322,6 +322,15 @@ inline Result Get(Client &cli, const std::string &path,
   return Result{cli.open_stream(path, headers)};
 }
 
+inline Result Get(Client &cli, const std::string &path, const Params &params) {
+  return Result{cli.open_stream(append_query_params(path, params))};
+}
+
+inline Result Get(Client &cli, const std::string &path, const Params &params,
+                  const Headers &headers) {
+  return Result{cli.open_stream(append_query_params(path, params), headers)};
+}
+
 } // namespace stream
 
 } // namespace httplib
