@@ -1545,31 +1545,6 @@ public:
     ssize_t read_with_decompression(char *buf, size_t len);
 
   public:
-    // Read all remaining content into a string
-    std::string read_all() {
-      if (!is_valid() || !response) { return {}; }
-
-      if (is_socket_direct_mode()) {
-        // Socket direct mode: read all from stream (uses read() for
-        // decompression)
-        std::string result;
-        char buf[8192];
-        ssize_t n;
-        while ((n = read(buf, sizeof(buf))) > 0) {
-          result.append(buf, static_cast<size_t>(n));
-        }
-        return result;
-      } else {
-        // Memory buffer mode
-        const auto &body = response->body;
-        if (read_offset_ >= body.size()) { return {}; }
-
-        auto result = body.substr(read_offset_);
-        read_offset_ = body.size();
-        return result;
-      }
-    }
-
     // Get the last error that occurred during reading (socket direct mode only)
     Error get_read_error() const { return body_reader_.last_error; }
 

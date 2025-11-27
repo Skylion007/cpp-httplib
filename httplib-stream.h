@@ -284,10 +284,6 @@ public:
     return detail::stream_body(std::move(handle_), chunk_size);
   }
 
-  // Read entire body at once (convenience method)
-  // Note: For large responses, prefer body() for memory efficiency
-  std::string read_all() { return handle_.read_all(); }
-
 private:
   ClientImpl::StreamHandle handle_;
 };

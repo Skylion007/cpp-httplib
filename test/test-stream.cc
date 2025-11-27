@@ -7,6 +7,21 @@
 #include "../httplib.h"
 
 //------------------------------------------------------------------------------
+// Test helper functions
+//------------------------------------------------------------------------------
+
+// Helper function to read all content from a StreamHandle
+inline std::string read_all(httplib::ClientImpl::StreamHandle &handle) {
+  std::string result;
+  char buf[8192];
+  ssize_t n;
+  while ((n = handle.read(buf, sizeof(buf))) > 0) {
+    result.append(buf, static_cast<size_t>(n));
+  }
+  return result;
+}
+
+//------------------------------------------------------------------------------
 // Step 1: StreamHandle struct existence test
 //------------------------------------------------------------------------------
 
@@ -262,13 +277,16 @@ TEST_F(StreamingServerTest, stream_Get_BodyGeneratorSmallChunks) {
   EXPECT_GT(chunk_count, 1u); // Should have multiple chunks
 }
 
-TEST_F(StreamingServerTest, stream_Get_ReadAll) {
+TEST_F(StreamingServerTest, stream_Get_BodyIteration) {
   httplib::Client cli("localhost", 8787);
 
   auto result = httplib::stream::Get(cli, "/hello");
   ASSERT_TRUE(result.is_valid());
 
-  std::string body = result.read_all();
+  std::string body;
+  for (auto chunk : result.body()) {
+    body.append(chunk);
+  }
   EXPECT_EQ("Hello World!", body);
 }
 
@@ -299,7 +317,10 @@ TEST_F(StreamingServerTest, stream_Get_WithParams) {
   ASSERT_TRUE(result.is_valid());
   EXPECT_EQ(200, result.status());
 
-  std::string body = result.read_all();
+  std::string body;
+  for (auto chunk : result.body()) {
+    body.append(chunk);
+  }
   EXPECT_TRUE(body.find("foo=bar") != std::string::npos);
   EXPECT_TRUE(body.find("baz=123") != std::string::npos);
 }
@@ -314,7 +335,10 @@ TEST_F(StreamingServerTest, stream_Get_WithParamsAndHeaders) {
   ASSERT_TRUE(result.is_valid());
   EXPECT_EQ(200, result.status());
 
-  std::string body = result.read_all();
+  std::string body;
+  for (auto chunk : result.body()) {
+    body.append(chunk);
+  }
   EXPECT_TRUE(body.find("key=value") != std::string::npos);
 }
 
@@ -431,7 +455,7 @@ TEST_F(ChunkedStreamingTest, ReadChunkedResponse) {
   EXPECT_EQ("text/plain", handle.response->get_header_value("Content-Type"));
 
   // Read all content
-  std::string body = handle.read_all();
+  std::string body = read_all(handle);
   EXPECT_EQ("chunk1\nchunk2\nchunk3\n", body);
 }
 
@@ -488,7 +512,7 @@ TEST_F(ChunkedStreamingTest, SSELikeStreaming) {
   EXPECT_EQ("text/event-stream",
             handle.response->get_header_value("Content-Type"));
 
-  std::string body = handle.read_all();
+  std::string body = read_all(handle);
 
   // Verify SSE format
   EXPECT_NE(std::string::npos, body.find("data: message 0"));
@@ -937,7 +961,7 @@ TEST_F(StreamHandleV2Test, ReadAllSocketDirect) {
   handle.body_reader_.stream = mock_stream_.get();
   handle.body_reader_.content_length = 18;
 
-  auto result = handle.read_all();
+  auto result = read_all(handle);
   EXPECT_EQ("Hello from socket!", result);
 }
 
@@ -956,7 +980,7 @@ TEST_F(StreamHandleV2Test, GetReadErrorReturnsSuccess) {
   EXPECT_EQ(httplib::Error::Success, handle.get_read_error());
 
   // Read successfully
-  handle.read_all();
+  read_all(handle);
   EXPECT_FALSE(handle.has_read_error());
 }
 
@@ -1094,7 +1118,7 @@ TEST_F(OpenStreamDirectTest, ReadBody) {
   auto handle = cli.open_stream("/hello");
   ASSERT_TRUE(handle.is_valid());
 
-  auto body = handle.read_all();
+  auto body = read_all(handle);
   EXPECT_EQ("Hello World!", body);
 }
 
@@ -1120,7 +1144,7 @@ TEST_F(OpenStreamDirectTest, LargeResponse) {
   auto handle = cli.open_stream("/large");
   ASSERT_TRUE(handle.is_valid());
 
-  auto body = handle.read_all();
+  auto body = read_all(handle);
   EXPECT_EQ(10000u, body.size());
   EXPECT_EQ(std::string(10000, 'X'), body);
 }
@@ -1141,7 +1165,7 @@ TEST_F(OpenStreamDirectTest, ChunkedResponse) {
   ASSERT_TRUE(handle.is_valid());
   EXPECT_TRUE(handle.body_reader_.chunked);
 
-  auto body = handle.read_all();
+  auto body = read_all(handle);
   // Server sends "chunk" 3 times
   EXPECT_EQ("chunkchunkchunk", body);
 }
@@ -1185,7 +1209,7 @@ TEST_F(OpenStreamDirectTest, GzipCompressedResponse) {
   // Decompressor should be set up
   EXPECT_TRUE(handle.decompressor_ != nullptr);
 
-  auto body = handle.read_all();
+  auto body = read_all(handle);
   EXPECT_EQ("This is gzip compressed chunked data!", body);
 }
 
@@ -1222,7 +1246,7 @@ TEST_F(OpenStreamDirectTest, NoCompressionWhenNotRequested) {
   // Should not have decompressor
   EXPECT_TRUE(handle.decompressor_ == nullptr);
 
-  auto body = handle.read_all();
+  auto body = read_all(handle);
   EXPECT_EQ("This is gzip compressed chunked data!", body);
 }
 #endif // CPPHTTPLIB_ZLIB_SUPPORT
@@ -1246,7 +1270,7 @@ TEST_F(OpenStreamDirectTest, BrotliCompressedResponse) {
   // Decompressor should be set up
   EXPECT_TRUE(handle.decompressor_ != nullptr);
 
-  auto body = handle.read_all();
+  auto body = read_all(handle);
   EXPECT_EQ("This is gzip compressed chunked data!", body);
 }
 
@@ -1289,7 +1313,7 @@ TEST_F(OpenStreamDirectTest, ZstdCompressedResponse) {
   // Decompressor should be set up
   EXPECT_TRUE(handle.decompressor_ != nullptr);
 
-  auto body = handle.read_all();
+  auto body = read_all(handle);
   EXPECT_EQ("This is gzip compressed chunked data!", body);
 }
 
@@ -1332,7 +1356,7 @@ TEST_F(OpenStreamDirectTest, LargeGzipCompressedResponse) {
   EXPECT_TRUE(handle.decompressor_ != nullptr);
 
   // Read and decompress 100KB of data
-  auto body = handle.read_all();
+  auto body = read_all(handle);
   EXPECT_EQ(100 * 1024, body.size());
 
   // Verify content pattern
@@ -1377,7 +1401,7 @@ TEST_F(OpenStreamDirectTest, LargeBrotliCompressedResponse) {
   EXPECT_EQ("br", encoding);
   EXPECT_TRUE(handle.decompressor_ != nullptr);
 
-  auto body = handle.read_all();
+  auto body = read_all(handle);
   EXPECT_EQ(100 * 1024, body.size());
   EXPECT_TRUE(body.find("Line 000000: Hello World!") != std::string::npos);
 }
@@ -1398,7 +1422,7 @@ TEST_F(OpenStreamDirectTest, LargeZstdCompressedResponse) {
   EXPECT_EQ("zstd", encoding);
   EXPECT_TRUE(handle.decompressor_ != nullptr);
 
-  auto body = handle.read_all();
+  auto body = read_all(handle);
   EXPECT_EQ(100 * 1024, body.size());
   EXPECT_TRUE(body.find("Line 000000: Hello World!") != std::string::npos);
 }
@@ -1453,7 +1477,7 @@ TEST_F(SSLOpenStreamDirectTest, BasicSSLStream) {
   EXPECT_EQ(200, handle.response->status);
   EXPECT_TRUE(handle.is_socket_direct_mode());
 
-  auto body = handle.read_all();
+  auto body = read_all(handle);
   EXPECT_EQ("Hello SSL World!", body);
 }
 
@@ -1466,7 +1490,7 @@ TEST_F(SSLOpenStreamDirectTest, SSLChunkedResponse) {
   ASSERT_TRUE(handle.is_valid()) << "Error: " << static_cast<int>(handle.error);
   EXPECT_TRUE(handle.body_reader_.chunked);
 
-  auto body = handle.read_all();
+  auto body = read_all(handle);
   EXPECT_EQ("chunkchunkchunk", body);
 }
 #endif

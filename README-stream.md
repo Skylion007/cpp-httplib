@@ -2,6 +2,12 @@
 
 This document describes the C++20 streaming extensions for cpp-httplib, providing a generator-like API for handling HTTP responses incrementally with **true socket-level streaming**.
 
+> **Important Notes**:
+>
+> - **No Keep-Alive**: Each `stream::Get()` call uses a dedicated connection that is closed after the response is fully read. For connection reuse, use `Client::Get()`.
+> - **Single iteration only**: The `body()` generator can only be iterated once. Calling `body()` again after iteration has no effect.
+> - **Result is not thread-safe**: While `stream::Get()` can be called from multiple threads simultaneously, the returned `stream::Result` must be used from a single thread only.
+
 ## Overview
 
 The C++20 streaming API allows you to process HTTP response bodies chunk by chunk using C++20 coroutines, similar to Python's generators or C++23's `std::generator`. Data is read directly from the network socket, enabling low-memory processing of large responses. This is particularly useful for:
@@ -91,9 +97,6 @@ if (handle.is_valid()) {
     while ((n = handle.read(buf, sizeof(buf))) > 0) {
         process(buf, n);
     }
-    
-    // Or read all at once
-    std::string body = handle.read_all();
 }
 ```
 
@@ -106,7 +109,6 @@ if (handle.is_valid()) {
 | `is_valid()` | `bool` | Returns true if response is valid |
 | `is_socket_direct_mode()` | `bool` | Returns true (always direct socket reading) |
 | `read(buf, len)` | `ssize_t` | Read up to `len` bytes directly from socket |
-| `read_all()` | `std::string` | Read all remaining content |
 
 ### High-Level API: `stream::Get()` and `stream::Result`
 
@@ -133,7 +135,6 @@ auto result = httplib::stream::Get(cli, "/path", headers);
 | `status()` | `int` | HTTP status code |
 | `headers()` | `Headers&` | Response headers |
 | `body(chunk_size)` | `Generator<std::string_view>` | Generator yielding body chunks |
-| `read_all()` | `std::string` | Read entire body at once |
 
 ### Generator Class
 
