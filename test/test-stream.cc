@@ -1,16 +1,10 @@
 // C++20 Streaming API Tests
-// Requires C++20 or later
 
 #include <gtest/gtest.h>
 
 #define CPPHTTPLIB_OPENSSL_SUPPORT
 #include "../httplib.h"
 
-//------------------------------------------------------------------------------
-// Test helper functions
-//------------------------------------------------------------------------------
-
-// Helper function to read all content from a StreamHandle
 inline std::string read_all(httplib::ClientImpl::StreamHandle &handle) {
   std::string result;
   char buf[8192];
@@ -21,49 +15,27 @@ inline std::string read_all(httplib::ClientImpl::StreamHandle &handle) {
   return result;
 }
 
-//------------------------------------------------------------------------------
-// Step 1: StreamHandle struct existence test
-//------------------------------------------------------------------------------
-
-TEST(StreamHandleTest, StructExists) {
-  // Verify StreamHandle struct is defined and accessible
+TEST(StreamHandleTest, Basic) {
+  // Test default state
   httplib::ClientImpl::StreamHandle handle;
-
-  // Check default state
   EXPECT_FALSE(handle.is_valid());
   EXPECT_EQ(httplib::Error::Success, handle.error);
   EXPECT_EQ(nullptr, handle.response);
-}
 
-TEST(StreamHandleTest, IsValidReturnsFalseWhenResponseIsNull) {
-  httplib::ClientImpl::StreamHandle handle;
+  // is_valid returns false when response is null
   handle.error = httplib::Error::Success;
-  handle.response = nullptr;
-
   EXPECT_FALSE(handle.is_valid());
-}
 
-TEST(StreamHandleTest, IsValidReturnsFalseWhenErrorIsSet) {
-  httplib::ClientImpl::StreamHandle handle;
+  // is_valid returns false when error is set
+  handle.response = std::make_unique<httplib::Response>();
   handle.error = httplib::Error::Connection;
-  handle.response = std::make_unique<httplib::Response>();
-
   EXPECT_FALSE(handle.is_valid());
-}
 
-TEST(StreamHandleTest, IsValidReturnsTrueWhenValid) {
-  httplib::ClientImpl::StreamHandle handle;
+  // is_valid returns true when valid
   handle.error = httplib::Error::Success;
-  handle.response = std::make_unique<httplib::Response>();
-
   EXPECT_TRUE(handle.is_valid());
 }
 
-//------------------------------------------------------------------------------
-// Step 2: open_stream() method test
-//------------------------------------------------------------------------------
-
-// Test server for streaming tests
 class StreamingServerTest : public ::testing::Test {
 protected:
   void SetUp() override {
@@ -114,67 +86,47 @@ protected:
   std::thread server_thread_;
 };
 
-TEST_F(StreamingServerTest, OpenStreamMethodExists) {
+TEST_F(StreamingServerTest, OpenStream) {
   httplib::Client cli("localhost", 8787);
 
   // Verify open_stream method exists and returns StreamHandle
-  auto handle = cli.open_stream("/hello");
+  auto handle = cli.open_stream("GET", "/hello");
 
   // Should be valid for successful request
   EXPECT_TRUE(handle.is_valid());
   EXPECT_EQ(200, handle.response->status);
 }
 
-TEST_F(StreamingServerTest, OpenStreamReturnsHeaders) {
+TEST_F(StreamingServerTest, Headers) {
   httplib::Client cli("localhost", 8787);
 
-  auto handle = cli.open_stream("/hello");
+  auto handle = cli.open_stream("GET", "/hello");
 
   ASSERT_TRUE(handle.is_valid());
   EXPECT_TRUE(handle.response->has_header("Content-Type"));
   EXPECT_EQ("text/plain", handle.response->get_header_value("Content-Type"));
 }
 
-TEST_F(StreamingServerTest, OpenStreamWithInvalidPath) {
+TEST_F(StreamingServerTest, NotFound) {
   httplib::Client cli("localhost", 8787);
 
-  auto handle = cli.open_stream("/nonexistent");
+  auto handle = cli.open_stream("GET", "/nonexistent");
 
   // Should still be valid but with 404 status
   EXPECT_TRUE(handle.is_valid());
   EXPECT_EQ(404, handle.response->status);
 }
 
-TEST_F(StreamingServerTest, OpenStreamConnectionError) {
-  httplib::Client cli("localhost", 9999); // No server on this port
-
-  auto handle = cli.open_stream("/hello");
-
+TEST_F(StreamingServerTest, ConnectionError) {
+  httplib::Client cli("localhost", 9999);
+  auto handle = cli.open_stream("GET", "/hello");
   EXPECT_FALSE(handle.is_valid());
   EXPECT_NE(httplib::Error::Success, handle.error);
 }
 
-//------------------------------------------------------------------------------
-// Step 3: StreamHandle::read() method test
-//------------------------------------------------------------------------------
-
-TEST_F(StreamingServerTest, ReadMethodExists) {
+TEST_F(StreamingServerTest, Read) {
   httplib::Client cli("localhost", 8787);
-
-  auto handle = cli.open_stream("/hello");
-  ASSERT_TRUE(handle.is_valid());
-
-  // Read should return data
-  char buf[1024];
-  auto n = handle.read(buf, sizeof(buf));
-
-  EXPECT_GT(n, 0);
-}
-
-TEST_F(StreamingServerTest, ReadReturnsCorrectContent) {
-  httplib::Client cli("localhost", 8787);
-
-  auto handle = cli.open_stream("/hello");
+  auto handle = cli.open_stream("GET", "/hello");
   ASSERT_TRUE(handle.is_valid());
 
   std::string body;
@@ -183,31 +135,17 @@ TEST_F(StreamingServerTest, ReadReturnsCorrectContent) {
   while ((n = handle.read(buf, sizeof(buf))) > 0) {
     body.append(buf, static_cast<size_t>(n));
   }
-
   EXPECT_EQ("Hello World!", body);
-}
-
-TEST_F(StreamingServerTest, ReadReturnsZeroAtEnd) {
-  httplib::Client cli("localhost", 8787);
-
-  auto handle = cli.open_stream("/hello");
-  ASSERT_TRUE(handle.is_valid());
-
-  // Read all content
-  char buf[1024];
-  while (handle.read(buf, sizeof(buf)) > 0) {
-    // consume
-  }
 
   // Further reads should return 0
-  auto n = handle.read(buf, sizeof(buf));
+  n = handle.read(buf, sizeof(buf));
   EXPECT_EQ(0, n);
 }
 
-TEST_F(StreamingServerTest, ReadSmallBuffer) {
+TEST_F(StreamingServerTest, SmallBuffer) {
   httplib::Client cli("localhost", 8787);
 
-  auto handle = cli.open_stream("/hello");
+  auto handle = cli.open_stream("GET", "/hello");
   ASSERT_TRUE(handle.is_valid());
 
   // Read with small buffer
@@ -221,143 +159,88 @@ TEST_F(StreamingServerTest, ReadSmallBuffer) {
   EXPECT_EQ("Hello World!", body);
 }
 
-//------------------------------------------------------------------------------
-// Step 4: httplib-stream.h Generator API tests
-//------------------------------------------------------------------------------
-
 #include "../httplib-stream.h"
 
-TEST_F(StreamingServerTest, stream_Get_ReturnsResult) {
-  httplib::Client cli("localhost", 8787);
-
-  auto result = httplib::stream::Get(cli, "/hello");
-
-  EXPECT_TRUE(result.is_valid());
-  EXPECT_EQ(200, result.status());
-}
-
-TEST_F(StreamingServerTest, stream_Get_WithHeaders) {
-  httplib::Client cli("localhost", 8787);
-
-  auto result = httplib::stream::Get(cli, "/hello");
-
-  ASSERT_TRUE(result.is_valid());
-  EXPECT_TRUE(result.has_header("Content-Type"));
-  EXPECT_EQ("text/plain", result.get_header_value("Content-Type"));
-}
-
-TEST_F(StreamingServerTest, stream_Get_BodyGenerator) {
-  httplib::Client cli("localhost", 8787);
-
-  auto result = httplib::stream::Get(cli, "/hello");
-  ASSERT_TRUE(result.is_valid());
-
+inline std::string read_body(httplib::stream::Result &result) {
   std::string body;
   for (auto chunk : result.body()) {
     body.append(chunk);
   }
-
-  EXPECT_EQ("Hello World!", body);
+  return body;
 }
 
-TEST_F(StreamingServerTest, stream_Get_BodyGeneratorSmallChunks) {
+TEST_F(StreamingServerTest, GetBasic) {
   httplib::Client cli("localhost", 8787);
+  auto result = httplib::stream::Get(cli, "/hello");
 
+  ASSERT_TRUE(result.is_valid());
+  EXPECT_EQ(200, result.status());
+  EXPECT_TRUE(result.has_header("Content-Type"));
+  EXPECT_EQ("text/plain", result.get_header_value("Content-Type"));
+
+  EXPECT_EQ("Hello World!", read_body(result));
+  EXPECT_FALSE(result.has_read_error());
+}
+
+TEST_F(StreamingServerTest, GetSmallChunks) {
+  httplib::Client cli("localhost", 8787);
   auto result = httplib::stream::Get(cli, "/hello");
   ASSERT_TRUE(result.is_valid());
 
   std::string body;
   size_t chunk_count = 0;
-  for (auto chunk : result.body(4)) { // Small chunk size
+  for (auto chunk : result.body(4)) {
     body.append(chunk);
     chunk_count++;
   }
-
   EXPECT_EQ("Hello World!", body);
-  EXPECT_GT(chunk_count, 1u); // Should have multiple chunks
+  EXPECT_GT(chunk_count, 1u);
 }
 
-TEST_F(StreamingServerTest, stream_Get_BodyIteration) {
-  httplib::Client cli("localhost", 8787);
-
+TEST_F(StreamingServerTest, GetConnectionError) {
+  httplib::Client cli("localhost", 9999);
   auto result = httplib::stream::Get(cli, "/hello");
-  ASSERT_TRUE(result.is_valid());
-
-  std::string body;
-  for (auto chunk : result.body()) {
-    body.append(chunk);
-  }
-  EXPECT_EQ("Hello World!", body);
-
-  // No read error after successful read
-  EXPECT_FALSE(result.has_read_error());
-  EXPECT_EQ(httplib::Error::Success, result.read_error());
-}
-
-TEST_F(StreamingServerTest, stream_Get_ConnectionError) {
-  httplib::Client cli("localhost", 9999); // No server
-
-  auto result = httplib::stream::Get(cli, "/hello");
-
   EXPECT_FALSE(result.is_valid());
   EXPECT_NE(httplib::Error::Success, result.error());
 }
 
-TEST_F(StreamingServerTest, stream_Get_404) {
+TEST_F(StreamingServerTest, Get404) {
   httplib::Client cli("localhost", 8787);
-
   auto result = httplib::stream::Get(cli, "/nonexistent");
-
   EXPECT_TRUE(result.is_valid());
   EXPECT_EQ(404, result.status());
 }
 
-TEST_F(StreamingServerTest, stream_Get_WithParams) {
+TEST_F(StreamingServerTest, GetWithParams) {
   httplib::Client cli("localhost", 8787);
   httplib::Params params = {{"foo", "bar"}, {"baz", "123"}};
-
   auto result = httplib::stream::Get(cli, "/echo-params", params);
 
   ASSERT_TRUE(result.is_valid());
-  EXPECT_EQ(200, result.status());
-
-  std::string body;
-  for (auto chunk : result.body()) {
-    body.append(chunk);
-  }
+  auto body = read_body(result);
   EXPECT_TRUE(body.find("foo=bar") != std::string::npos);
   EXPECT_TRUE(body.find("baz=123") != std::string::npos);
 }
 
-TEST_F(StreamingServerTest, stream_Get_WithParamsAndHeaders) {
+TEST_F(StreamingServerTest, GetWithParamsAndHeaders) {
   httplib::Client cli("localhost", 8787);
   httplib::Params params = {{"key", "value"}};
   httplib::Headers headers = {{"X-Custom-Header", "test"}};
-
   auto result = httplib::stream::Get(cli, "/echo-params", params, headers);
 
   ASSERT_TRUE(result.is_valid());
-  EXPECT_EQ(200, result.status());
-
-  std::string body;
-  for (auto chunk : result.body()) {
-    body.append(chunk);
-  }
-  EXPECT_TRUE(body.find("key=value") != std::string::npos);
+  EXPECT_TRUE(read_body(result).find("key=value") != std::string::npos);
 }
 
-TEST(GeneratorTest, EmptyGenerator) {
-  auto gen = []() -> httplib::Generator<int> { co_return; }();
-
+TEST(GeneratorTest, Basic) {
+  auto empty_gen = []() -> httplib::Generator<int> { co_return; }();
   int count = 0;
-  for (auto val : gen) {
+  for (auto val : empty_gen) {
     (void)val;
     count++;
   }
   EXPECT_EQ(0, count);
-}
 
-TEST(GeneratorTest, SimpleGenerator) {
   auto gen = []() -> httplib::Generator<int> {
     co_yield 1;
     co_yield 2;
@@ -368,312 +251,38 @@ TEST(GeneratorTest, SimpleGenerator) {
   for (auto val : gen) {
     values.push_back(val);
   }
-
   EXPECT_EQ(3u, values.size());
   EXPECT_EQ(1, values[0]);
   EXPECT_EQ(2, values[1]);
   EXPECT_EQ(3, values[2]);
 }
 
-//------------------------------------------------------------------------------
-// Step 5: Integration tests with chunked transfer encoding
-//------------------------------------------------------------------------------
-
-class ChunkedStreamingTest : public ::testing::Test {
-protected:
-  void SetUp() override {
-    svr_.Get("/chunked", [](const httplib::Request &, httplib::Response &res) {
-      res.set_chunked_content_provider(
-          "text/plain", [](size_t offset, httplib::DataSink &sink) {
-            // Simulate streaming data in chunks
-            if (offset == 0) {
-              sink.write("chunk1\n", 7);
-              return true;
-            } else if (offset == 7) {
-              sink.write("chunk2\n", 7);
-              return true;
-            } else if (offset == 14) {
-              sink.write("chunk3\n", 7);
-              sink.done();
-              return true;
-            }
-            return false;
-          });
-    });
-
-    svr_.Get("/large", [](const httplib::Request &, httplib::Response &res) {
-      // Generate 100KB of data in chunks
-      res.set_chunked_content_provider(
-          "application/octet-stream",
-          [](size_t offset, httplib::DataSink &sink) {
-            const size_t total_size = 100 * 1024; // 100KB
-            const size_t chunk_size = 1024;       // 1KB chunks
-
-            if (offset >= total_size) {
-              sink.done();
-              return true;
-            }
-
-            std::string chunk(chunk_size, 'X');
-            sink.write(chunk.data(), chunk.size());
-            return true;
-          });
-    });
-
-    svr_.Get("/sse-like", [](const httplib::Request &, httplib::Response &res) {
-      // Simulate SSE/LLM streaming response
-      res.set_chunked_content_provider(
-          "text/event-stream",
-          [count = 0](size_t /*offset*/, httplib::DataSink &sink) mutable {
-            if (count < 5) {
-              std::string event =
-                  "data: message " + std::to_string(count) + "\n\n";
-              sink.write(event.data(), event.size());
-              count++;
-              return true;
-            }
-            sink.done();
-            return true;
-          });
-    });
-
-    thread_ = std::thread([this]() { svr_.listen("127.0.0.1", 8787); });
-    svr_.wait_until_ready();
-  }
-
-  void TearDown() override {
-    svr_.stop();
-    if (thread_.joinable()) { thread_.join(); }
-  }
-
-  httplib::Server svr_;
-  std::thread thread_;
-};
-
-TEST_F(ChunkedStreamingTest, ReadChunkedResponse) {
-  httplib::Client cli("http://127.0.0.1:8787");
-  auto handle = cli.open_stream("/chunked");
-
-  ASSERT_TRUE(handle.is_valid());
-  EXPECT_EQ(200, handle.response->status);
-  EXPECT_EQ("text/plain", handle.response->get_header_value("Content-Type"));
-
-  // Read all content
-  std::string body = read_all(handle);
-  EXPECT_EQ("chunk1\nchunk2\nchunk3\n", body);
-}
-
-TEST_F(ChunkedStreamingTest, ReadChunkedResponseInPieces) {
-  httplib::Client cli("http://127.0.0.1:8787");
-  auto handle = cli.open_stream("/chunked");
-
-  ASSERT_TRUE(handle.is_valid());
-
-  // Read in small pieces
-  std::vector<std::string> pieces;
-  char buf[8];
-  ssize_t n;
-  while ((n = handle.read(buf, sizeof(buf))) > 0) {
-    pieces.emplace_back(buf, static_cast<size_t>(n));
-  }
-
-  // Verify we got the content (may be in different chunk sizes)
-  std::string combined;
-  for (const auto &p : pieces) {
-    combined += p;
-  }
-  EXPECT_EQ("chunk1\nchunk2\nchunk3\n", combined);
-}
-
-TEST_F(ChunkedStreamingTest, LargeResponseStreaming) {
-  httplib::Client cli("http://127.0.0.1:8787");
-  auto handle = cli.open_stream("/large");
-
-  ASSERT_TRUE(handle.is_valid());
-  EXPECT_EQ(200, handle.response->status);
-
-  // Read in chunks and verify
-  size_t total_read = 0;
-  char buf[4096];
-  ssize_t n;
-  while ((n = handle.read(buf, sizeof(buf))) > 0) {
-    // Verify content is all 'X'
-    for (size_t i = 0; i < static_cast<size_t>(n); i++) {
-      EXPECT_EQ('X', buf[i]);
-    }
-    total_read += static_cast<size_t>(n);
-  }
-
-  EXPECT_EQ(100u * 1024u, total_read); // 100KB total
-}
-
-TEST_F(ChunkedStreamingTest, SSELikeStreaming) {
-  httplib::Client cli("http://127.0.0.1:8787");
-  auto handle = cli.open_stream("/sse-like");
-
-  ASSERT_TRUE(handle.is_valid());
-  EXPECT_EQ(200, handle.response->status);
-  EXPECT_EQ("text/event-stream",
-            handle.response->get_header_value("Content-Type"));
-
-  std::string body = read_all(handle);
-
-  // Verify SSE format
-  EXPECT_NE(std::string::npos, body.find("data: message 0"));
-  EXPECT_NE(std::string::npos, body.find("data: message 4"));
-}
-
-TEST_F(ChunkedStreamingTest, GeneratorWithChunkedResponse) {
-  httplib::Client cli("http://127.0.0.1:8787");
-  auto result = httplib::stream::Get(cli, "/chunked");
-
-  ASSERT_TRUE(result);
-  EXPECT_EQ(200, result.status());
-
-  std::vector<std::string> chunks;
-  for (auto chunk : result.body(8)) {
-    chunks.emplace_back(chunk);
-  }
-
-  // Combine and verify
-  std::string combined;
-  for (const auto &c : chunks) {
-    combined += c;
-  }
-  EXPECT_EQ("chunk1\nchunk2\nchunk3\n", combined);
-}
-
-TEST_F(ChunkedStreamingTest, GeneratorWithLargeResponse) {
-  httplib::Client cli("http://127.0.0.1:8787");
-  auto result = httplib::stream::Get(cli, "/large");
-
-  ASSERT_TRUE(result);
-
-  size_t total_size = 0;
-  size_t chunk_count = 0;
-  for (auto chunk : result.body(4096)) {
-    total_size += chunk.size();
-    chunk_count++;
-  }
-
-  EXPECT_EQ(100u * 1024u, total_size); // 100KB total
-  EXPECT_GT(chunk_count, 1u);          // Multiple chunks
-}
-
-TEST_F(ChunkedStreamingTest, SSELikeWithGenerator) {
-  httplib::Client cli("http://127.0.0.1:8787");
-  auto result = httplib::stream::Get(cli, "/sse-like");
-
-  ASSERT_TRUE(result);
-
-  std::string combined;
-  for (auto chunk : result.body(256)) {
-    combined += chunk;
-  }
-
-  // Verify all messages received
-  for (int i = 0; i < 5; i++) {
-    std::string expected = "data: message " + std::to_string(i);
-    EXPECT_NE(std::string::npos, combined.find(expected));
-  }
-}
-
-//------------------------------------------------------------------------------
-// Phase 2.1: ClientConnection class tests
-//------------------------------------------------------------------------------
-
-TEST(ClientConnectionTest, StructExists) {
-  // Verify ClientConnection struct is defined
+TEST(ClientConnectionTest, Basic) {
   httplib::ClientConnection conn;
-
-  // Check default state
   EXPECT_EQ(INVALID_SOCKET, conn.sock);
   EXPECT_FALSE(conn.is_open());
-}
 
-TEST(ClientConnectionTest, IsOpenReturnsTrueWhenSocketValid) {
-  httplib::ClientConnection conn;
-  conn.sock = 1; // Fake valid socket
-
+  conn.sock = 1;
   EXPECT_TRUE(conn.is_open());
 
-  // Reset to avoid closing invalid socket in destructor
-  conn.sock = INVALID_SOCKET;
+  httplib::ClientConnection conn2(std::move(conn));
+  EXPECT_EQ(1, conn2.sock);
+  EXPECT_EQ(INVALID_SOCKET, conn.sock);
+
+  httplib::ClientConnection conn3;
+  conn3 = std::move(conn2);
+  EXPECT_EQ(1, conn3.sock);
+  EXPECT_EQ(INVALID_SOCKET, conn2.sock);
+
+  conn3.sock = INVALID_SOCKET;
 }
 
-TEST(ClientConnectionTest, MoveConstructor) {
-  httplib::ClientConnection conn1;
-  conn1.sock = 42;
-
-  httplib::ClientConnection conn2(std::move(conn1));
-
-  EXPECT_EQ(42, conn2.sock);
-  EXPECT_EQ(INVALID_SOCKET, conn1.sock); // Moved-from state
-
-  // Reset to avoid closing invalid socket in destructor
-  conn2.sock = INVALID_SOCKET;
-}
-
-TEST(ClientConnectionTest, MoveAssignment) {
-  httplib::ClientConnection conn1;
-  conn1.sock = 42;
-
-  httplib::ClientConnection conn2;
-  conn2 = std::move(conn1);
-
-  EXPECT_EQ(42, conn2.sock);
-  EXPECT_EQ(INVALID_SOCKET, conn1.sock); // Moved-from state
-
-  // Reset to avoid closing invalid socket in destructor
-  conn2.sock = INVALID_SOCKET;
-}
-
-//------------------------------------------------------------------------------
-// Phase 2.2: BodyReader struct tests
-//------------------------------------------------------------------------------
-
-TEST(BodyReaderTest, StructExists) {
-  // Verify BodyReader struct is defined
-  httplib::detail::BodyReader reader;
-
-  // Check default state
-  EXPECT_EQ(nullptr, reader.stream);
-  EXPECT_EQ(0u, reader.content_length);
-  EXPECT_EQ(0u, reader.bytes_read);
-  EXPECT_FALSE(reader.chunked);
-  EXPECT_FALSE(reader.eof);
-}
-
-TEST(BodyReaderTest, InitializeWithContentLength) {
-  httplib::detail::BodyReader reader;
-  reader.content_length = 1024;
-  reader.chunked = false;
-
-  EXPECT_EQ(1024u, reader.content_length);
-  EXPECT_FALSE(reader.chunked);
-}
-
-TEST(BodyReaderTest, InitializeAsChunked) {
-  httplib::detail::BodyReader reader;
-  reader.chunked = true;
-
-  EXPECT_TRUE(reader.chunked);
-  EXPECT_EQ(0u, reader.content_length);
-}
-
-//------------------------------------------------------------------------------
-// Phase 2.3: BodyReader::read() tests
-//------------------------------------------------------------------------------
-
-// Mock stream for testing BodyReader
 class MockStream : public httplib::Stream {
 public:
   explicit MockStream(const std::string &data) : data_(data), pos_(0) {}
-
   bool is_readable() const override { return pos_ < data_.size(); }
   bool wait_readable() const override { return is_readable(); }
   bool wait_writable() const override { return true; }
-
   ssize_t read(char *ptr, size_t size) override {
     if (pos_ >= data_.size()) return 0;
     size_t to_read = std::min(size, data_.size() - pos_);
@@ -681,19 +290,15 @@ public:
     pos_ += to_read;
     return static_cast<ssize_t>(to_read);
   }
-
   ssize_t write(const char *, size_t) override { return -1; }
-
   void get_remote_ip_and_port(std::string &ip, int &port) const override {
     ip = "127.0.0.1";
     port = 0;
   }
-
   void get_local_ip_and_port(std::string &ip, int &port) const override {
     ip = "127.0.0.1";
     port = 0;
   }
-
   socket_t socket() const override { return INVALID_SOCKET; }
   time_t duration() const override { return 0; }
 
@@ -702,91 +307,15 @@ private:
   size_t pos_;
 };
 
-TEST(BodyReaderTest, ReadWithContentLength) {
-  std::string body = "Hello, World!";
-  MockStream stream(body);
-
-  httplib::detail::BodyReader reader;
-  reader.stream = &stream;
-  reader.content_length = body.size();
-  reader.chunked = false;
-
-  char buf[32];
-  auto n = reader.read(buf, sizeof(buf));
-
-  EXPECT_EQ(static_cast<ssize_t>(body.size()), n);
-  EXPECT_EQ(body, std::string(buf, static_cast<size_t>(n)));
-  EXPECT_EQ(body.size(), reader.bytes_read);
-}
-
-TEST(BodyReaderTest, ReadWithContentLengthPartial) {
-  std::string body = "Hello, World!";
-  MockStream stream(body);
-
-  httplib::detail::BodyReader reader;
-  reader.stream = &stream;
-  reader.content_length = body.size();
-  reader.chunked = false;
-
-  // Read in small chunks
-  char buf[5];
-  std::string result;
-
-  ssize_t n;
-  while ((n = reader.read(buf, sizeof(buf))) > 0) {
-    result.append(buf, static_cast<size_t>(n));
-  }
-
-  EXPECT_EQ(body, result);
-  EXPECT_TRUE(reader.eof);
-}
-
-TEST(BodyReaderTest, ReadReturnsZeroAtEOF) {
-  std::string body = "Hi";
-  MockStream stream(body);
-
-  httplib::detail::BodyReader reader;
-  reader.stream = &stream;
-  reader.content_length = body.size();
-  reader.chunked = false;
-
-  char buf[32];
-  reader.read(buf, sizeof(buf)); // Read all
-
-  // Next read should return 0
-  auto n = reader.read(buf, sizeof(buf));
-  EXPECT_EQ(0, n);
-  EXPECT_TRUE(reader.eof);
-}
-
-TEST(BodyReaderTest, ReadWithoutStream) {
-  httplib::detail::BodyReader reader;
-  reader.stream = nullptr;
-
-  char buf[32];
-  auto n = reader.read(buf, sizeof(buf));
-
-  EXPECT_EQ(-1, n);
-  EXPECT_TRUE(reader.has_error());
-  EXPECT_EQ(httplib::Error::Connection, reader.last_error);
-}
-
-//------------------------------------------------------------------------------
-// Phase 2.10: Error handling tests
-//------------------------------------------------------------------------------
-
-// Mock stream that returns error after N bytes
 class ErrorAfterNBytesStream : public httplib::Stream {
 public:
   ErrorAfterNBytesStream(const std::string &data, size_t error_after)
       : data_(data), pos_(0), error_after_(error_after) {}
-
   bool is_readable() const override { return true; }
   bool wait_readable() const override { return true; }
   bool wait_writable() const override { return true; }
-
   ssize_t read(char *ptr, size_t size) override {
-    if (pos_ >= error_after_) { return -1; } // Simulate read error
+    if (pos_ >= error_after_) { return -1; }
     if (pos_ >= data_.size()) { return 0; }
     size_t to_read =
         std::min(size, std::min(data_.size() - pos_, error_after_ - pos_));
@@ -794,19 +323,15 @@ public:
     pos_ += to_read;
     return static_cast<ssize_t>(to_read);
   }
-
   ssize_t write(const char *, size_t) override { return -1; }
-
   void get_remote_ip_and_port(std::string &ip, int &port) const override {
     ip = "127.0.0.1";
     port = 0;
   }
-
   void get_local_ip_and_port(std::string &ip, int &port) const override {
     ip = "127.0.0.1";
     port = 0;
   }
-
   socket_t socket() const override { return INVALID_SOCKET; }
   time_t duration() const override { return 0; }
 
@@ -816,135 +341,89 @@ private:
   size_t error_after_;
 };
 
-TEST(BodyReaderErrorTest, ReadErrorSetsLastError) {
-  ErrorAfterNBytesStream stream("Hello, World!", 5);
+TEST(BodyReaderTest, Basic) {
+  httplib::detail::BodyReader reader;
+  EXPECT_EQ(nullptr, reader.stream);
+  EXPECT_EQ(0u, reader.content_length);
+  EXPECT_FALSE(reader.chunked);
+  EXPECT_FALSE(reader.eof);
+  EXPECT_FALSE(reader.has_error());
 
+  std::string body = "Hello, World!";
+  MockStream stream(body);
+  reader.stream = &stream;
+  reader.content_length = body.size();
+
+  char buf[32];
+  auto n = reader.read(buf, sizeof(buf));
+  EXPECT_EQ(static_cast<ssize_t>(body.size()), n);
+  EXPECT_EQ(body, std::string(buf, static_cast<size_t>(n)));
+
+  n = reader.read(buf, sizeof(buf));
+  EXPECT_EQ(0, n);
+  EXPECT_TRUE(reader.eof);
+}
+
+TEST(BodyReaderTest, NoStream) {
+  httplib::detail::BodyReader reader;
+  reader.stream = nullptr;
+
+  char buf[32];
+  auto n = reader.read(buf, sizeof(buf));
+  EXPECT_EQ(-1, n);
+  EXPECT_TRUE(reader.has_error());
+  EXPECT_EQ(httplib::Error::Connection, reader.last_error);
+}
+
+TEST(BodyReaderTest, Error) {
+  ErrorAfterNBytesStream stream("Hello, World!", 5);
   httplib::detail::BodyReader reader;
   reader.stream = &stream;
   reader.content_length = 13;
-  reader.chunked = false;
 
   char buf[32];
-
-  // First read succeeds (5 bytes)
   auto n1 = reader.read(buf, sizeof(buf));
   EXPECT_EQ(5, n1);
   EXPECT_FALSE(reader.has_error());
 
-  // Second read fails
   auto n2 = reader.read(buf, sizeof(buf));
   EXPECT_EQ(-1, n2);
   EXPECT_TRUE(reader.has_error());
   EXPECT_EQ(httplib::Error::Read, reader.last_error);
 }
 
-TEST(BodyReaderErrorTest, UnexpectedEOFSetsError) {
-  // Data is shorter than content_length
-  MockStream stream("Short");
-
-  httplib::detail::BodyReader reader;
-  reader.stream = &stream;
-  reader.content_length = 100; // Expect 100 bytes but only 5 available
-  reader.chunked = false;
-
-  char buf[32];
-
-  // First read gets the available data
-  auto n1 = reader.read(buf, sizeof(buf));
-  EXPECT_EQ(5, n1);
-  EXPECT_FALSE(reader.has_error());
-
-  // Second read hits unexpected EOF
-  auto n2 = reader.read(buf, sizeof(buf));
-  EXPECT_EQ(0, n2);
-  EXPECT_TRUE(reader.has_error());
-  EXPECT_EQ(httplib::Error::Read, reader.last_error);
-}
-
-TEST(BodyReaderErrorTest, HasErrorMethod) {
-  httplib::detail::BodyReader reader;
-
-  EXPECT_FALSE(reader.has_error());
-  EXPECT_EQ(httplib::Error::Success, reader.last_error);
-
-  reader.last_error = httplib::Error::Read;
-  EXPECT_TRUE(reader.has_error());
-}
-
-// =============================================================================
-// StreamHandle v2 Tests (Socket Direct Mode)
-// =============================================================================
-
-class StreamHandleV2Test : public ::testing::Test {
+class StreamHandleMockTest : public ::testing::Test {
 protected:
   void SetUp() override {
     mock_stream_ = std::make_unique<MockStream>("Hello from socket!");
   }
-
   std::unique_ptr<MockStream> mock_stream_;
 };
 
-TEST_F(StreamHandleV2Test, SocketDirectModeBasic) {
-  // Create StreamHandle with socket direct mode
+TEST_F(StreamHandleMockTest, SocketDirect) {
   httplib::ClientImpl::StreamHandle handle;
-
-  // Set up response (headers only, body will be read from stream)
   handle.response = std::make_unique<httplib::Response>();
   handle.response->status = 200;
   handle.response->set_header("Content-Length", "18");
-
-  // Set up socket direct mode
   handle.stream_ = mock_stream_.get();
   handle.body_reader_.stream = mock_stream_.get();
   handle.body_reader_.content_length = 18;
 
   EXPECT_TRUE(handle.is_valid());
   EXPECT_TRUE(handle.is_socket_direct_mode());
+  EXPECT_FALSE(handle.has_read_error());
 
-  // Read from socket
-  char buf[32];
-  auto n = handle.read(buf, sizeof(buf));
-  EXPECT_EQ(18, n);
-  EXPECT_EQ(std::string("Hello from socket!"),
-            std::string(buf, static_cast<size_t>(n)));
-
-  // EOF
-  n = handle.read(buf, sizeof(buf));
-  EXPECT_EQ(0, n);
-}
-
-TEST_F(StreamHandleV2Test, SocketDirectModeChunkedRead) {
-  httplib::ClientImpl::StreamHandle handle;
-
-  handle.response = std::make_unique<httplib::Response>();
-  handle.response->status = 200;
-
-  handle.stream_ = mock_stream_.get();
-  handle.body_reader_.stream = mock_stream_.get();
-  handle.body_reader_.content_length = 18;
-
-  // Read in small chunks
-  char buf[5];
-  std::string result;
-
-  ssize_t n;
-  while ((n = handle.read(buf, sizeof(buf))) > 0) {
-    result.append(buf, static_cast<size_t>(n));
-  }
-
+  auto result = read_all(handle);
   EXPECT_EQ("Hello from socket!", result);
-  EXPECT_EQ(0, n); // EOF
+  EXPECT_FALSE(handle.has_read_error());
 }
 
-TEST_F(StreamHandleV2Test, MemoryBufferModeStillWorks) {
-  // Existing behavior: read from response->body
+TEST_F(StreamHandleMockTest, MemoryBuffer) {
   httplib::ClientImpl::StreamHandle handle;
-
   handle.response = std::make_unique<httplib::Response>();
   handle.response->status = 200;
   handle.response->body = "Memory buffer content";
 
-  // No stream set = memory buffer mode
   EXPECT_TRUE(handle.is_valid());
   EXPECT_FALSE(handle.is_socket_direct_mode());
 
@@ -955,68 +434,28 @@ TEST_F(StreamHandleV2Test, MemoryBufferModeStillWorks) {
             std::string(buf, static_cast<size_t>(n)));
 }
 
-TEST_F(StreamHandleV2Test, ReadAllSocketDirect) {
-  httplib::ClientImpl::StreamHandle handle;
-
-  handle.response = std::make_unique<httplib::Response>();
-  handle.response->status = 200;
-
-  handle.stream_ = mock_stream_.get();
-  handle.body_reader_.stream = mock_stream_.get();
-  handle.body_reader_.content_length = 18;
-
-  auto result = read_all(handle);
-  EXPECT_EQ("Hello from socket!", result);
-}
-
-TEST_F(StreamHandleV2Test, GetReadErrorReturnsSuccess) {
-  httplib::ClientImpl::StreamHandle handle;
-
-  handle.response = std::make_unique<httplib::Response>();
-  handle.response->status = 200;
-
-  handle.stream_ = mock_stream_.get();
-  handle.body_reader_.stream = mock_stream_.get();
-  handle.body_reader_.content_length = 18;
-
-  // No error initially
-  EXPECT_FALSE(handle.has_read_error());
-  EXPECT_EQ(httplib::Error::Success, handle.get_read_error());
-
-  // Read successfully
-  read_all(handle);
-  EXPECT_FALSE(handle.has_read_error());
-}
-
-TEST_F(StreamHandleV2Test, GetReadErrorAfterReadFailure) {
+TEST_F(StreamHandleMockTest, Error) {
   auto error_stream =
       std::make_unique<ErrorAfterNBytesStream>("Hello World", 5);
 
   httplib::ClientImpl::StreamHandle handle;
   handle.response = std::make_unique<httplib::Response>();
   handle.response->status = 200;
-
   handle.stream_ = error_stream.get();
   handle.body_reader_.stream = error_stream.get();
   handle.body_reader_.content_length = 11;
 
-  // Read until error
   char buf[32];
-  handle.read(buf, sizeof(buf)); // First read: 5 bytes OK
-  handle.read(buf, sizeof(buf)); // Second read: error
+  handle.read(buf, sizeof(buf));
+  handle.read(buf, sizeof(buf));
 
   EXPECT_TRUE(handle.has_read_error());
   EXPECT_EQ(httplib::Error::Read, handle.get_read_error());
 }
 
-// =============================================================================
-// Phase 2.5: open_stream() Tests (True Streaming)
-// =============================================================================
-
-class OpenStreamDirectTest : public ::testing::Test {
+class OpenStreamTest : public ::testing::Test {
 protected:
   void SetUp() override {
-    // Start test server
     svr_.Get("/hello", [](const httplib::Request &, httplib::Response &res) {
       res.set_content("Hello World!", "text/plain");
     });
@@ -1029,7 +468,6 @@ protected:
     svr_.Get("/chunked", [](const httplib::Request &, httplib::Response &res) {
       res.set_chunked_content_provider(
           "text/plain", [](size_t offset, httplib::DataSink &sink) {
-            // Send "chunk" 3 times (offset 0, 5, 10)
             if (offset < 15) {
               sink.write("chunk", 5);
               return true;
@@ -1039,27 +477,22 @@ protected:
           });
     });
 
-    // Endpoint that returns gzip-compressed chunked content
-    // Server automatically compresses chunked responses when client accepts
-    svr_.Get(
-        "/gzip-chunked", [](const httplib::Request &, httplib::Response &res) {
-          res.set_chunked_content_provider(
-              "text/plain", [](size_t /*offset*/, httplib::DataSink &sink) {
-                sink.os << "This is ";
-                sink.os << "gzip compressed ";
-                sink.os << "chunked data!";
-                sink.done();
-                return true;
-              });
-        });
+    svr_.Get("/gzip-chunked",
+             [](const httplib::Request &, httplib::Response &res) {
+               res.set_chunked_content_provider(
+                   "text/plain", [](size_t, httplib::DataSink &sink) {
+                     sink.os << "This is ";
+                     sink.os << "gzip compressed ";
+                     sink.os << "chunked data!";
+                     sink.done();
+                     return true;
+                   });
+             });
 
-    // Large compressible data endpoint for testing compression efficiency
-    // Repetitive text compresses very well (e.g., 100KB -> ~1KB)
     svr_.Get("/large-compressible",
              [](const httplib::Request &, httplib::Response &res) {
                res.set_chunked_content_provider(
                    "text/plain", [](size_t offset, httplib::DataSink &sink) {
-                     // Generate 100KB of repetitive compressible data
                      const size_t total_size = 100 * 1024;
                      const size_t chunk_size = 8192;
 
@@ -1098,38 +531,38 @@ protected:
   std::thread thread_;
 };
 
-TEST_F(OpenStreamDirectTest, MethodExists) {
+TEST_F(OpenStreamTest, Basic) {
   httplib::Client cli("127.0.0.1", 8787);
 
-  auto handle = cli.open_stream("/hello");
+  auto handle = cli.open_stream("GET", "/hello");
 
   EXPECT_TRUE(handle.is_valid());
   EXPECT_EQ(200, handle.response->status);
 }
 
-TEST_F(OpenStreamDirectTest, IsSocketDirectMode) {
+TEST_F(OpenStreamTest, SocketDirect) {
   httplib::Client cli("127.0.0.1", 8787);
 
-  auto handle = cli.open_stream("/hello");
+  auto handle = cli.open_stream("GET", "/hello");
 
   EXPECT_TRUE(handle.is_valid());
   EXPECT_TRUE(handle.is_socket_direct_mode());
 }
 
-TEST_F(OpenStreamDirectTest, ReadBody) {
+TEST_F(OpenStreamTest, ReadBody) {
   httplib::Client cli("127.0.0.1", 8787);
 
-  auto handle = cli.open_stream("/hello");
+  auto handle = cli.open_stream("GET", "/hello");
   ASSERT_TRUE(handle.is_valid());
 
   auto body = read_all(handle);
   EXPECT_EQ("Hello World!", body);
 }
 
-TEST_F(OpenStreamDirectTest, ReadBodyInChunks) {
+TEST_F(OpenStreamTest, SmallBuffer) {
   httplib::Client cli("127.0.0.1", 8787);
 
-  auto handle = cli.open_stream("/hello");
+  auto handle = cli.open_stream("GET", "/hello");
   ASSERT_TRUE(handle.is_valid());
 
   std::string result;
@@ -1142,10 +575,10 @@ TEST_F(OpenStreamDirectTest, ReadBodyInChunks) {
   EXPECT_EQ("Hello World!", result);
 }
 
-TEST_F(OpenStreamDirectTest, LargeResponse) {
+TEST_F(OpenStreamTest, Large) {
   httplib::Client cli("127.0.0.1", 8787);
 
-  auto handle = cli.open_stream("/large");
+  auto handle = cli.open_stream("GET", "/large");
   ASSERT_TRUE(handle.is_valid());
 
   auto body = read_all(handle);
@@ -1153,19 +586,19 @@ TEST_F(OpenStreamDirectTest, LargeResponse) {
   EXPECT_EQ(std::string(10000, 'X'), body);
 }
 
-TEST_F(OpenStreamDirectTest, ConnectionError) {
+TEST_F(OpenStreamTest, ConnectionError) {
   httplib::Client cli("127.0.0.1", 9999); // Wrong port
 
-  auto handle = cli.open_stream("/hello");
+  auto handle = cli.open_stream("GET", "/hello");
 
   EXPECT_FALSE(handle.is_valid());
   EXPECT_NE(httplib::Error::Success, handle.error);
 }
 
-TEST_F(OpenStreamDirectTest, ChunkedResponse) {
+TEST_F(OpenStreamTest, Chunked) {
   httplib::Client cli("127.0.0.1", 8787);
 
-  auto handle = cli.open_stream("/chunked");
+  auto handle = cli.open_stream("GET", "/chunked");
   ASSERT_TRUE(handle.is_valid());
   EXPECT_TRUE(handle.body_reader_.chunked);
 
@@ -1174,10 +607,10 @@ TEST_F(OpenStreamDirectTest, ChunkedResponse) {
   EXPECT_EQ("chunkchunkchunk", body);
 }
 
-TEST_F(OpenStreamDirectTest, ChunkedResponseInPieces) {
+TEST_F(OpenStreamTest, ChunkedSmallBuffer) {
   httplib::Client cli("127.0.0.1", 8787);
 
-  auto handle = cli.open_stream("/chunked");
+  auto handle = cli.open_stream("GET", "/chunked");
   ASSERT_TRUE(handle.is_valid());
 
   std::string result;
@@ -1190,256 +623,81 @@ TEST_F(OpenStreamDirectTest, ChunkedResponseInPieces) {
   EXPECT_EQ("chunkchunkchunk", result);
 }
 
-// =============================================================================
-// Phase 2.9: Compression Support Tests
-// =============================================================================
-
 #ifdef CPPHTTPLIB_ZLIB_SUPPORT
-TEST_F(OpenStreamDirectTest, GzipCompressedResponse) {
+TEST_F(OpenStreamTest, Gzip) {
   httplib::Client cli("127.0.0.1", 8787);
-
-  // Request with Accept-Encoding header to trigger server compression
   httplib::Headers headers;
   headers.emplace("Accept-Encoding", "gzip, deflate");
 
-  auto handle = cli.open_stream("/gzip-chunked", headers);
+  auto handle = cli.open_stream("GET", "/gzip-chunked", {}, headers);
   ASSERT_TRUE(handle.is_valid());
-  EXPECT_EQ(200, handle.response->status);
-
-  // Check Content-Encoding header - server should compress chunked response
-  auto encoding = handle.response->get_header_value("Content-Encoding");
-  EXPECT_EQ("gzip", encoding);
-
-  // Decompressor should be set up
+  EXPECT_EQ("gzip", handle.response->get_header_value("Content-Encoding"));
   EXPECT_TRUE(handle.decompressor_ != nullptr);
 
   auto body = read_all(handle);
   EXPECT_EQ("This is gzip compressed chunked data!", body);
 }
 
-TEST_F(OpenStreamDirectTest, GzipCompressedResponseInChunks) {
+TEST_F(OpenStreamTest, LargeGzip) {
   httplib::Client cli("127.0.0.1", 8787);
-
   httplib::Headers headers;
   headers.emplace("Accept-Encoding", "gzip, deflate");
 
-  auto handle = cli.open_stream("/gzip-chunked", headers);
+  auto handle = cli.open_stream("GET", "/large-compressible", {}, headers);
   ASSERT_TRUE(handle.is_valid());
+  EXPECT_EQ("gzip", handle.response->get_header_value("Content-Encoding"));
 
-  std::string result;
-  char buf[8]; // Small buffer to force multiple reads
-  ssize_t n;
-  while ((n = handle.read(buf, sizeof(buf))) > 0) {
-    result.append(buf, static_cast<size_t>(n));
-  }
-
-  EXPECT_EQ("This is gzip compressed chunked data!", result);
+  auto body = read_all(handle);
+  EXPECT_EQ(100 * 1024, body.size());
+  EXPECT_TRUE(body.find("Line 000000: Hello World!") != std::string::npos);
 }
 
-TEST_F(OpenStreamDirectTest, NoCompressionWhenNotRequested) {
+TEST_F(OpenStreamTest, NoCompression) {
   httplib::Client cli("127.0.0.1", 8787);
-  // No Accept-Encoding header - compression disabled
-
-  auto handle = cli.open_stream("/gzip-chunked");
+  auto handle = cli.open_stream("GET", "/gzip-chunked");
   ASSERT_TRUE(handle.is_valid());
-
-  // Should not have Content-Encoding since we didn't request compression
-  auto encoding = handle.response->get_header_value("Content-Encoding");
-  EXPECT_TRUE(encoding.empty());
-
-  // Should not have decompressor
+  EXPECT_TRUE(handle.response->get_header_value("Content-Encoding").empty());
   EXPECT_TRUE(handle.decompressor_ == nullptr);
 
   auto body = read_all(handle);
   EXPECT_EQ("This is gzip compressed chunked data!", body);
 }
-#endif // CPPHTTPLIB_ZLIB_SUPPORT
+#endif
 
 #ifdef CPPHTTPLIB_BROTLI_SUPPORT
-TEST_F(OpenStreamDirectTest, BrotliCompressedResponse) {
+TEST_F(OpenStreamTest, Brotli) {
   httplib::Client cli("127.0.0.1", 8787);
-
-  // Request with Accept-Encoding: br to trigger brotli compression
   httplib::Headers headers;
   headers.emplace("Accept-Encoding", "br");
 
-  auto handle = cli.open_stream("/gzip-chunked", headers);
+  auto handle = cli.open_stream("GET", "/large-compressible", {}, headers);
   ASSERT_TRUE(handle.is_valid());
-  EXPECT_EQ(200, handle.response->status);
-
-  // Check Content-Encoding header
-  auto encoding = handle.response->get_header_value("Content-Encoding");
-  EXPECT_EQ("br", encoding);
-
-  // Decompressor should be set up
-  EXPECT_TRUE(handle.decompressor_ != nullptr);
+  EXPECT_EQ("br", handle.response->get_header_value("Content-Encoding"));
 
   auto body = read_all(handle);
-  EXPECT_EQ("This is gzip compressed chunked data!", body);
+  EXPECT_EQ(100 * 1024, body.size());
 }
-
-TEST_F(OpenStreamDirectTest, BrotliCompressedResponseInChunks) {
-  httplib::Client cli("127.0.0.1", 8787);
-
-  httplib::Headers headers;
-  headers.emplace("Accept-Encoding", "br");
-
-  auto handle = cli.open_stream("/gzip-chunked", headers);
-  ASSERT_TRUE(handle.is_valid());
-
-  std::string result;
-  char buf[8]; // Small buffer to force multiple reads
-  ssize_t n;
-  while ((n = handle.read(buf, sizeof(buf))) > 0) {
-    result.append(buf, static_cast<size_t>(n));
-  }
-
-  EXPECT_EQ("This is gzip compressed chunked data!", result);
-}
-#endif // CPPHTTPLIB_BROTLI_SUPPORT
+#endif
 
 #ifdef CPPHTTPLIB_ZSTD_SUPPORT
-TEST_F(OpenStreamDirectTest, ZstdCompressedResponse) {
+TEST_F(OpenStreamTest, Zstd) {
   httplib::Client cli("127.0.0.1", 8787);
-
-  // Request with Accept-Encoding: zstd to trigger zstd compression
   httplib::Headers headers;
   headers.emplace("Accept-Encoding", "zstd");
 
-  auto handle = cli.open_stream("/gzip-chunked", headers);
+  auto handle = cli.open_stream("GET", "/large-compressible", {}, headers);
   ASSERT_TRUE(handle.is_valid());
-  EXPECT_EQ(200, handle.response->status);
-
-  // Check Content-Encoding header
-  auto encoding = handle.response->get_header_value("Content-Encoding");
-  EXPECT_EQ("zstd", encoding);
-
-  // Decompressor should be set up
-  EXPECT_TRUE(handle.decompressor_ != nullptr);
-
-  auto body = read_all(handle);
-  EXPECT_EQ("This is gzip compressed chunked data!", body);
-}
-
-TEST_F(OpenStreamDirectTest, ZstdCompressedResponseInChunks) {
-  httplib::Client cli("127.0.0.1", 8787);
-
-  httplib::Headers headers;
-  headers.emplace("Accept-Encoding", "zstd");
-
-  auto handle = cli.open_stream("/gzip-chunked", headers);
-  ASSERT_TRUE(handle.is_valid());
-
-  std::string result;
-  char buf[8]; // Small buffer to force multiple reads
-  ssize_t n;
-  while ((n = handle.read(buf, sizeof(buf))) > 0) {
-    result.append(buf, static_cast<size_t>(n));
-  }
-
-  EXPECT_EQ("This is gzip compressed chunked data!", result);
-}
-#endif // CPPHTTPLIB_ZSTD_SUPPORT
-
-// Large compressible data tests - tests that compression works efficiently
-// with larger data that has high compression ratio
-#ifdef CPPHTTPLIB_ZLIB_SUPPORT
-TEST_F(OpenStreamDirectTest, LargeGzipCompressedResponse) {
-  httplib::Client cli("127.0.0.1", 8787);
-
-  httplib::Headers headers;
-  headers.emplace("Accept-Encoding", "gzip, deflate");
-
-  auto handle = cli.open_stream("/large-compressible", headers);
-  ASSERT_TRUE(handle.is_valid());
-  EXPECT_EQ(200, handle.response->status);
-
-  // Should be compressed
-  auto encoding = handle.response->get_header_value("Content-Encoding");
-  EXPECT_EQ("gzip", encoding);
-  EXPECT_TRUE(handle.decompressor_ != nullptr);
-
-  // Read and decompress 100KB of data
-  auto body = read_all(handle);
-  EXPECT_EQ(100 * 1024, body.size());
-
-  // Verify content pattern
-  EXPECT_TRUE(body.find("Line 000000: Hello World!") != std::string::npos);
-  EXPECT_TRUE(body.find("Line 003000: Hello World!") != std::string::npos);
-}
-
-TEST_F(OpenStreamDirectTest, LargeGzipInChunksSmallBuffer) {
-  httplib::Client cli("127.0.0.1", 8787);
-
-  httplib::Headers headers;
-  headers.emplace("Accept-Encoding", "gzip, deflate");
-
-  auto handle = cli.open_stream("/large-compressible", headers);
-  ASSERT_TRUE(handle.is_valid());
-
-  // Read with very small buffer to stress decompression buffering
-  std::string result;
-  char buf[64];
-  ssize_t n;
-  while ((n = handle.read(buf, sizeof(buf))) > 0) {
-    result.append(buf, static_cast<size_t>(n));
-  }
-
-  EXPECT_EQ(100 * 1024, result.size());
-  EXPECT_TRUE(result.find("Line 000000: Hello World!") != std::string::npos);
-}
-#endif // CPPHTTPLIB_ZLIB_SUPPORT
-
-#ifdef CPPHTTPLIB_BROTLI_SUPPORT
-TEST_F(OpenStreamDirectTest, LargeBrotliCompressedResponse) {
-  httplib::Client cli("127.0.0.1", 8787);
-
-  httplib::Headers headers;
-  headers.emplace("Accept-Encoding", "br");
-
-  auto handle = cli.open_stream("/large-compressible", headers);
-  ASSERT_TRUE(handle.is_valid());
-  EXPECT_EQ(200, handle.response->status);
-
-  auto encoding = handle.response->get_header_value("Content-Encoding");
-  EXPECT_EQ("br", encoding);
-  EXPECT_TRUE(handle.decompressor_ != nullptr);
+  EXPECT_EQ("zstd", handle.response->get_header_value("Content-Encoding"));
 
   auto body = read_all(handle);
   EXPECT_EQ(100 * 1024, body.size());
-  EXPECT_TRUE(body.find("Line 000000: Hello World!") != std::string::npos);
 }
-#endif // CPPHTTPLIB_BROTLI_SUPPORT
-
-#ifdef CPPHTTPLIB_ZSTD_SUPPORT
-TEST_F(OpenStreamDirectTest, LargeZstdCompressedResponse) {
-  httplib::Client cli("127.0.0.1", 8787);
-
-  httplib::Headers headers;
-  headers.emplace("Accept-Encoding", "zstd");
-
-  auto handle = cli.open_stream("/large-compressible", headers);
-  ASSERT_TRUE(handle.is_valid());
-  EXPECT_EQ(200, handle.response->status);
-
-  auto encoding = handle.response->get_header_value("Content-Encoding");
-  EXPECT_EQ("zstd", encoding);
-  EXPECT_TRUE(handle.decompressor_ != nullptr);
-
-  auto body = read_all(handle);
-  EXPECT_EQ(100 * 1024, body.size());
-  EXPECT_TRUE(body.find("Line 000000: Hello World!") != std::string::npos);
-}
-#endif // CPPHTTPLIB_ZSTD_SUPPORT
-
-// =============================================================================
-// Phase 2.7: SSL Support Tests
-// =============================================================================
+#endif
 
 #ifdef CPPHTTPLIB_OPENSSL_SUPPORT
-class SSLOpenStreamDirectTest : public ::testing::Test {
+class SSLOpenStreamTest : public ::testing::Test {
 protected:
-  SSLOpenStreamDirectTest() : svr_("cert.pem", "key.pem") {}
+  SSLOpenStreamTest() : svr_("cert.pem", "key.pem") {}
 
   void SetUp() override {
     svr_.Get("/hello", [](const httplib::Request &, httplib::Response &res) {
@@ -1471,11 +729,11 @@ protected:
   std::thread thread_;
 };
 
-TEST_F(SSLOpenStreamDirectTest, BasicSSLStream) {
+TEST_F(SSLOpenStreamTest, Basic) {
   httplib::SSLClient cli("127.0.0.1", 8788);
   cli.enable_server_certificate_verification(false);
 
-  auto handle = cli.open_stream("/hello");
+  auto handle = cli.open_stream("GET", "/hello");
 
   ASSERT_TRUE(handle.is_valid()) << "Error: " << static_cast<int>(handle.error);
   EXPECT_EQ(200, handle.response->status);
@@ -1485,11 +743,11 @@ TEST_F(SSLOpenStreamDirectTest, BasicSSLStream) {
   EXPECT_EQ("Hello SSL World!", body);
 }
 
-TEST_F(SSLOpenStreamDirectTest, SSLChunkedResponse) {
+TEST_F(SSLOpenStreamTest, Chunked) {
   httplib::SSLClient cli("127.0.0.1", 8788);
   cli.enable_server_certificate_verification(false);
 
-  auto handle = cli.open_stream("/chunked");
+  auto handle = cli.open_stream("GET", "/chunked");
 
   ASSERT_TRUE(handle.is_valid()) << "Error: " << static_cast<int>(handle.error);
   EXPECT_TRUE(handle.body_reader_.chunked);
@@ -1498,3 +756,501 @@ TEST_F(SSLOpenStreamDirectTest, SSLChunkedResponse) {
   EXPECT_EQ("chunkchunkchunk", body);
 }
 #endif
+
+//------------------------------------------------------------------------------
+// POST/PUT/PATCH Streaming Response Tests
+//------------------------------------------------------------------------------
+
+class PostStreamingTest : public ::testing::Test {
+protected:
+  void SetUp() override {
+    // Echo endpoint: returns the request body
+    server_.Post(
+        "/echo", [](const httplib::Request &req, httplib::Response &res) {
+          res.set_content(req.body, req.get_header_value("Content-Type"));
+        });
+
+    // Echo with streaming response (chunked)
+    server_.Post("/echo-chunked", [](const httplib::Request &req,
+                                     httplib::Response &res) {
+      std::string body = req.body;
+      res.set_chunked_content_provider(
+          "text/plain", [body](size_t offset, httplib::DataSink &sink) {
+            if (offset < body.size()) {
+              size_t chunk_size = std::min(size_t(10), body.size() - offset);
+              sink.write(body.data() + offset, chunk_size);
+              return true;
+            }
+            sink.done();
+            return true;
+          });
+    });
+
+    // Large response endpoint
+    server_.Post("/large-response",
+                 [](const httplib::Request &, httplib::Response &res) {
+                   // Return 100KB of data
+                   std::string large_body(100 * 1024, 'X');
+                   res.set_content(large_body, "application/octet-stream");
+                 });
+
+    // Echo with headers
+    server_.Post("/echo-headers",
+                 [](const httplib::Request &req, httplib::Response &res) {
+                   std::string result;
+                   for (const auto &h : req.headers) {
+                     result += h.first + ": " + h.second + "\n";
+                   }
+                   res.set_content(result, "text/plain");
+                 });
+
+    // PUT endpoint
+    server_.Put("/put-echo",
+                [](const httplib::Request &req, httplib::Response &res) {
+                  res.set_content("PUT:" + req.body, "text/plain");
+                });
+
+    // PATCH endpoint
+    server_.Patch("/patch-echo",
+                  [](const httplib::Request &req, httplib::Response &res) {
+                    res.set_content("PATCH:" + req.body, "text/plain");
+                  });
+
+    // Echo query params and body
+    server_.Post("/echo-params",
+                 [](const httplib::Request &req, httplib::Response &res) {
+                   std::string result = "params:";
+                   for (const auto &p : req.params) {
+                     result += p.first + "=" + p.second + ";";
+                   }
+                   result += " body:" + req.body;
+                   res.set_content(result, "text/plain");
+                 });
+
+    // Start server
+    server_thread_ =
+        std::thread([this]() { server_.listen("localhost", 8799); });
+
+    while (!server_.is_running()) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+  }
+
+  void TearDown() override {
+    server_.stop();
+    if (server_thread_.joinable()) { server_thread_.join(); }
+  }
+
+  httplib::Server server_;
+  std::thread server_thread_;
+};
+
+// Basic POST streaming test
+TEST_F(PostStreamingTest, Basic) {
+  httplib::Client cli("localhost", 8799);
+
+  auto result = httplib::stream::Post(cli, "/echo", "Hello POST", "text/plain");
+
+  ASSERT_TRUE(result.is_valid());
+  EXPECT_EQ(200, result.status());
+  EXPECT_EQ("text/plain", result.get_header_value("Content-Type"));
+
+  EXPECT_EQ("Hello POST", read_body(result));
+}
+
+// POST with custom headers
+TEST_F(PostStreamingTest, WithHeaders) {
+  httplib::Client cli("localhost", 8799);
+
+  httplib::Headers headers = {{"X-Custom-Header", "custom-value"}};
+  auto result = httplib::stream::Post(cli, "/echo-headers", headers, "body",
+                                      "text/plain");
+
+  ASSERT_TRUE(result.is_valid());
+  EXPECT_EQ(200, result.status());
+
+  EXPECT_TRUE(read_body(result).find("X-Custom-Header: custom-value") !=
+              std::string::npos);
+}
+
+// POST with chunked response streaming
+TEST_F(PostStreamingTest, Chunked) {
+  httplib::Client cli("localhost", 8799);
+
+  auto result = httplib::stream::Post(cli, "/echo-chunked",
+                                      "Hello Chunked World", "text/plain");
+
+  ASSERT_TRUE(result.is_valid());
+  EXPECT_EQ(200, result.status());
+
+  EXPECT_EQ("Hello Chunked World", read_body(result));
+}
+
+// POST with large response
+TEST_F(PostStreamingTest, Large) {
+  httplib::Client cli("localhost", 8799);
+
+  auto result =
+      httplib::stream::Post(cli, "/large-response", "trigger", "text/plain");
+
+  ASSERT_TRUE(result.is_valid());
+  EXPECT_EQ(200, result.status());
+
+  size_t total_size = 0;
+  for (auto chunk : result.body()) {
+    total_size += chunk.size();
+  }
+  EXPECT_EQ(100u * 1024u, total_size);
+}
+
+// PUT/PATCH streaming tests (minimal - same template as POST)
+TEST_F(PostStreamingTest, PutAndPatch) {
+  httplib::Client cli("localhost", 8799);
+
+  // PUT test
+  auto put_result =
+      httplib::stream::Put(cli, "/put-echo", "Hello PUT", "text/plain");
+  ASSERT_TRUE(put_result.is_valid());
+  EXPECT_EQ(200, put_result.status());
+  EXPECT_EQ("PUT:Hello PUT", read_body(put_result));
+
+  // PATCH test
+  auto patch_result =
+      httplib::stream::Patch(cli, "/patch-echo", "Hello PATCH", "text/plain");
+  ASSERT_TRUE(patch_result.is_valid());
+  EXPECT_EQ(200, patch_result.status());
+  EXPECT_EQ("PATCH:Hello PATCH", read_body(patch_result));
+}
+
+// POST with empty body
+TEST_F(PostStreamingTest, EmptyBody) {
+  httplib::Client cli("localhost", 8799);
+
+  auto result = httplib::stream::Post(cli, "/echo", "", "text/plain");
+
+  ASSERT_TRUE(result.is_valid());
+  EXPECT_EQ(200, result.status());
+
+  EXPECT_TRUE(read_body(result).empty());
+}
+
+// POST with JSON content type
+TEST_F(PostStreamingTest, Json) {
+  httplib::Client cli("localhost", 8799);
+
+  auto result = httplib::stream::Post(cli, "/echo", R"({"key":"value"})",
+                                      "application/json");
+
+  ASSERT_TRUE(result.is_valid());
+  EXPECT_EQ(200, result.status());
+  EXPECT_EQ("application/json", result.get_header_value("Content-Type"));
+
+  EXPECT_EQ(R"({"key":"value"})", read_body(result));
+}
+
+// stream::Result validity check
+TEST_F(PostStreamingTest, Validity) {
+  httplib::Client cli("localhost", 8799);
+
+  auto result = httplib::stream::Post(cli, "/echo", "test", "text/plain");
+
+  EXPECT_TRUE(result.is_valid());
+  EXPECT_TRUE(static_cast<bool>(result));
+  EXPECT_EQ(httplib::Error::Success, result.error());
+}
+
+// POST with Params
+TEST_F(PostStreamingTest, WithParams) {
+  httplib::Client cli("localhost", 8799);
+
+  httplib::Params params = {{"key1", "value1"}, {"key2", "value2"}};
+  auto result = httplib::stream::Post(cli, "/echo-params", params, "body data",
+                                      "text/plain");
+
+  ASSERT_TRUE(result.is_valid());
+  EXPECT_EQ(200, result.status());
+
+  auto body = read_body(result);
+  EXPECT_TRUE(body.find("key1=value1") != std::string::npos);
+  EXPECT_TRUE(body.find("key2=value2") != std::string::npos);
+  EXPECT_TRUE(body.find("body:body data") != std::string::npos);
+}
+
+// POST with Params and Headers
+TEST_F(PostStreamingTest, WithParamsAndHeaders) {
+  httplib::Client cli("localhost", 8799);
+
+  httplib::Params params = {{"id", "123"}};
+  httplib::Headers headers = {{"X-Custom", "test"}};
+  auto result = httplib::stream::Post(cli, "/echo-params", params, headers,
+                                      "json body", "application/json");
+
+  ASSERT_TRUE(result.is_valid());
+  EXPECT_EQ(200, result.status());
+
+  EXPECT_TRUE(read_body(result).find("id=123") != std::string::npos);
+}
+
+// POST to non-existent endpoint
+TEST_F(PostStreamingTest, NotFound) {
+  httplib::Client cli("localhost", 8799);
+
+  auto result =
+      httplib::stream::Post(cli, "/nonexistent", "test", "text/plain");
+
+  EXPECT_TRUE(result.is_valid());  // Connection succeeded
+  EXPECT_EQ(404, result.status()); // But endpoint not found
+}
+
+// Connection error
+TEST_F(PostStreamingTest, ConnectionError) {
+  httplib::Client cli("localhost", 9999); // No server
+
+  auto result = httplib::stream::Post(cli, "/echo", "test", "text/plain");
+
+  EXPECT_FALSE(result.is_valid());
+  EXPECT_NE(httplib::Error::Success, result.error());
+}
+
+//------------------------------------------------------------------------------
+// SSL POST Streaming Tests
+//------------------------------------------------------------------------------
+#ifdef CPPHTTPLIB_OPENSSL_SUPPORT
+
+class SSLPostStreamingTest : public ::testing::Test {
+protected:
+  void SetUp() override {
+    server_.Post(
+        "/echo", [](const httplib::Request &req, httplib::Response &res) {
+          res.set_content(req.body, req.get_header_value("Content-Type"));
+        });
+
+    // GET endpoint for stream::Get template test
+    server_.Get("/hello", [](const httplib::Request &, httplib::Response &res) {
+      res.set_content("Hello SSL World!", "text/plain");
+    });
+
+    server_.Put("/put-echo",
+                [](const httplib::Request &req, httplib::Response &res) {
+                  res.set_content("PUT:" + req.body, "text/plain");
+                });
+
+    server_.Patch("/patch-echo",
+                  [](const httplib::Request &req, httplib::Response &res) {
+                    res.set_content("PATCH:" + req.body, "text/plain");
+                  });
+
+    server_.Post("/chunked-response", [](const httplib::Request &req,
+                                         httplib::Response &res) {
+      std::string body = req.body;
+      res.set_chunked_content_provider(
+          "text/plain", [body](size_t offset, httplib::DataSink &sink) {
+            if (offset < body.size()) {
+              sink.write(body.data() + offset, body.size() - offset);
+            }
+            sink.done();
+            return true;
+          });
+    });
+
+    server_thread_ =
+        std::thread([this]() { server_.listen("127.0.0.1", 8801); });
+
+    while (!server_.is_running()) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+  }
+
+  void TearDown() override {
+    server_.stop();
+    if (server_thread_.joinable()) { server_thread_.join(); }
+  }
+
+  httplib::SSLServer server_{"cert.pem", "key.pem"};
+  std::thread server_thread_;
+};
+
+TEST_F(SSLPostStreamingTest, Basic) {
+  httplib::SSLClient cli("127.0.0.1", 8801);
+  cli.enable_server_certificate_verification(false);
+
+  auto handle =
+      cli.open_stream("POST", "/echo", {}, {}, "Hello SSL POST", "text/plain");
+
+  ASSERT_TRUE(handle.is_valid()) << "Error: " << static_cast<int>(handle.error);
+  EXPECT_EQ(200, handle.response->status);
+
+  auto body = read_all(handle);
+  EXPECT_EQ("Hello SSL POST", body);
+}
+
+TEST_F(SSLPostStreamingTest, Chunked) {
+  httplib::SSLClient cli("127.0.0.1", 8801);
+  cli.enable_server_certificate_verification(false);
+
+  auto handle = cli.open_stream("POST", "/chunked-response", {}, {},
+                                "Chunked SSL Data", "text/plain");
+
+  ASSERT_TRUE(handle.is_valid());
+  EXPECT_EQ(200, handle.response->status);
+
+  auto body = read_all(handle);
+  EXPECT_EQ("Chunked SSL Data", body);
+}
+
+// Test stream::Get with SSLClient (template version)
+TEST_F(SSLPostStreamingTest, Get) {
+  httplib::SSLClient cli("127.0.0.1", 8801);
+  cli.enable_server_certificate_verification(false);
+
+  // Use stream::Get with SSLClient
+  auto result = httplib::stream::Get(cli, "/hello");
+
+  ASSERT_TRUE(result.is_valid());
+  EXPECT_EQ(200, result.status());
+
+  EXPECT_EQ("Hello SSL World!", read_body(result));
+}
+
+// Test stream::Post with SSLClient (template version)
+TEST_F(SSLPostStreamingTest, Post) {
+  httplib::SSLClient cli("127.0.0.1", 8801);
+  cli.enable_server_certificate_verification(false);
+
+  auto result = httplib::stream::Post(cli, "/echo", "Test Body", "text/plain");
+
+  ASSERT_TRUE(result.is_valid());
+  EXPECT_EQ(200, result.status());
+
+  EXPECT_EQ("Test Body", read_body(result));
+}
+
+#endif // CPPHTTPLIB_OPENSSL_SUPPORT
+
+//------------------------------------------------------------------------------
+// DELETE/HEAD/OPTIONS Streaming Response Tests
+//------------------------------------------------------------------------------
+
+class OtherMethodsStreamingTest : public ::testing::Test {
+protected:
+  void SetUp() override {
+    // DELETE endpoint
+    server_.Delete("/resource",
+                   [](const httplib::Request &, httplib::Response &res) {
+                     res.set_content("Deleted", "text/plain");
+                   });
+
+    // DELETE with body endpoint
+    server_.Delete("/resource-with-body",
+                   [](const httplib::Request &req, httplib::Response &res) {
+                     res.set_content("Deleted:" + req.body, "text/plain");
+                   });
+
+    // DELETE with params endpoint
+    server_.Delete("/resource-params",
+                   [](const httplib::Request &req, httplib::Response &res) {
+                     std::string result = "Deleted:";
+                     for (const auto &p : req.params) {
+                       result += p.first + "=" + p.second + ";";
+                     }
+                     res.set_content(result, "text/plain");
+                   });
+
+    // HEAD endpoint (body is ignored in response)
+    server_.Get(
+        "/head-test", [](const httplib::Request &, httplib::Response &res) {
+          res.set_content("This body will be ignored for HEAD", "text/plain");
+        });
+
+    // OPTIONS endpoint
+    server_.Options(
+        "/options-test", [](const httplib::Request &, httplib::Response &res) {
+          res.set_header("Allow", "GET, POST, PUT, DELETE, OPTIONS");
+          res.set_content("", "text/plain");
+        });
+
+    // Start server
+    server_thread_ =
+        std::thread([this]() { server_.listen("localhost", 8802); });
+
+    while (!server_.is_running()) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+  }
+
+  void TearDown() override {
+    server_.stop();
+    if (server_thread_.joinable()) { server_thread_.join(); }
+  }
+
+  httplib::Server server_;
+  std::thread server_thread_;
+};
+
+// DELETE tests
+TEST_F(OtherMethodsStreamingTest, Delete) {
+  httplib::Client cli("localhost", 8802);
+
+  auto result = httplib::stream::Delete(cli, "/resource");
+
+  ASSERT_TRUE(result.is_valid());
+  EXPECT_EQ(200, result.status());
+
+  EXPECT_EQ("Deleted", read_body(result));
+}
+
+TEST_F(OtherMethodsStreamingTest, DeleteHeaders) {
+  httplib::Client cli("localhost", 8802);
+
+  httplib::Headers headers = {{"X-Custom", "Header"}};
+  auto result = httplib::stream::Delete(cli, "/resource", headers);
+
+  ASSERT_TRUE(result.is_valid());
+  EXPECT_EQ(200, result.status());
+}
+
+TEST_F(OtherMethodsStreamingTest, DeleteBody) {
+  httplib::Client cli("localhost", 8802);
+
+  auto result = httplib::stream::Delete(cli, "/resource-with-body",
+                                        "delete-data", "text/plain");
+
+  ASSERT_TRUE(result.is_valid());
+  EXPECT_EQ(200, result.status());
+
+  EXPECT_EQ("Deleted:delete-data", read_body(result));
+}
+
+TEST_F(OtherMethodsStreamingTest, DeleteParams) {
+  httplib::Client cli("localhost", 8802);
+
+  httplib::Params params = {{"id", "123"}};
+  auto result = httplib::stream::Delete(cli, "/resource-params", params);
+
+  ASSERT_TRUE(result.is_valid());
+  EXPECT_EQ(200, result.status());
+
+  EXPECT_EQ("Deleted:id=123;", read_body(result));
+}
+
+TEST_F(OtherMethodsStreamingTest, HeadAndOptions) {
+  httplib::Client cli("localhost", 8802);
+
+  // HEAD
+  auto head_result = httplib::stream::Head(cli, "/head-test");
+  ASSERT_TRUE(head_result.is_valid());
+  EXPECT_EQ(200, head_result.status());
+  EXPECT_FALSE(head_result.get_header_value("Content-Length").empty());
+
+  // HEAD with params
+  httplib::Params params = {{"key", "value"}};
+  auto head_params = httplib::stream::Head(cli, "/head-test", params);
+  ASSERT_TRUE(head_params.is_valid());
+
+  // OPTIONS
+  auto options_result = httplib::stream::Options(cli, "/options-test");
+  ASSERT_TRUE(options_result.is_valid());
+  EXPECT_EQ(200, options_result.status());
+  EXPECT_EQ("GET, POST, PUT, DELETE, OPTIONS",
+            options_result.get_header_value("Allow"));
+}

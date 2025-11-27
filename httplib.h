@@ -1647,8 +1647,12 @@ public:
 
   // Streaming API: Open a stream for reading response body incrementally
   // Socket ownership is transferred to StreamHandle for true streaming
-  StreamHandle open_stream(const std::string &path);
-  StreamHandle open_stream(const std::string &path, const Headers &headers);
+  // Supports all HTTP methods (GET, POST, PUT, PATCH, DELETE, etc.)
+  StreamHandle open_stream(const std::string &method, const std::string &path,
+                           const Params &params = {},
+                           const Headers &headers = {},
+                           const std::string &body = {},
+                           const std::string &content_type = {});
 
   bool send(Request &req, Response &res, Error &error);
   Result send(const Request &req);
@@ -2020,9 +2024,13 @@ public:
 
   // Streaming API: Open a stream for reading response body incrementally
   // Socket ownership is transferred to StreamHandle for true streaming
-  ClientImpl::StreamHandle open_stream(const std::string &path);
-  ClientImpl::StreamHandle open_stream(const std::string &path,
-                                       const Headers &headers);
+  // Supports all HTTP methods (GET, POST, PUT, PATCH, DELETE, etc.)
+  ClientImpl::StreamHandle open_stream(const std::string &method,
+                                       const std::string &path,
+                                       const Params &params = {},
+                                       const Headers &headers = {},
+                                       const std::string &body = {},
+                                       const std::string &content_type = {});
 
   bool send(Request &req, Response &res, Error &error);
   Result send(const Request &req);
@@ -9285,15 +9293,16 @@ inline Result ClientImpl::send_(Request &&req) {
 }
 
 inline ClientImpl::StreamHandle
-ClientImpl::open_stream(const std::string &path) {
-  return open_stream(path, Headers{});
-}
-
-inline ClientImpl::StreamHandle
-ClientImpl::open_stream(const std::string &path, const Headers &headers) {
+ClientImpl::open_stream(const std::string &method, const std::string &path,
+                        const Params &params, const Headers &headers,
+                        const std::string &body,
+                        const std::string &content_type) {
   StreamHandle handle;
   handle.response = detail::make_unique<Response>();
   handle.error = Error::Success;
+
+  // Build path with query params
+  auto query_path = params.empty() ? path : append_query_params(path, params);
 
   // Create socket connection
   handle.connection_ = detail::make_unique<ClientConnection>();
@@ -9366,9 +9375,10 @@ ClientImpl::open_stream(const std::string &path, const Headers &headers) {
 
   // Build and send request
   Request req;
-  req.method = "GET";
-  req.path = path;
+  req.method = method;
+  req.path = query_path;
   req.headers = headers;
+  req.body = body;
 
   // Add default headers
   for (const auto &header : default_headers_) {
@@ -9388,6 +9398,17 @@ ClientImpl::open_stream(const std::string &path, const Headers &headers) {
     req.headers.emplace("User-Agent", CPPHTTPLIB_VERSION);
   }
 
+  // Add Content-Type and Content-Length for body
+  if (!body.empty()) {
+    if (!content_type.empty() &&
+        req.headers.find("Content-Type") == req.headers.end()) {
+      req.headers.emplace("Content-Type", content_type);
+    }
+    if (req.headers.find("Content-Length") == req.headers.end()) {
+      req.headers.emplace("Content-Length", std::to_string(body.size()));
+    }
+  }
+
   // Write request line
   auto &strm = *handle.stream_;
   if (detail::write_request_line(strm, req.method, req.path) < 0) {
@@ -9397,11 +9418,19 @@ ClientImpl::open_stream(const std::string &path, const Headers &headers) {
   }
 
   // Write headers
-  // Write headers
   if (!detail::write_headers(strm, req.headers)) {
     handle.error = Error::Write;
     handle.response.reset();
     return handle;
+  }
+
+  // Write body if present
+  if (!body.empty()) {
+    if (strm.write(body.data(), body.size()) < 0) {
+      handle.error = Error::Write;
+      handle.response.reset();
+      return handle;
+    }
   }
 
   // Read response headers only (not body)
@@ -12664,12 +12693,11 @@ inline Result Client::Options(const std::string &path, const Headers &headers) {
   return cli_->Options(path, headers);
 }
 
-inline ClientImpl::StreamHandle Client::open_stream(const std::string &path) {
-  return cli_->open_stream(path);
-}
-inline ClientImpl::StreamHandle Client::open_stream(const std::string &path,
-                                                    const Headers &headers) {
-  return cli_->open_stream(path, headers);
+inline ClientImpl::StreamHandle
+Client::open_stream(const std::string &method, const std::string &path,
+                    const Params &params, const Headers &headers,
+                    const std::string &body, const std::string &content_type) {
+  return cli_->open_stream(method, path, params, headers, body, content_type);
 }
 
 inline bool Client::send(Request &req, Response &res, Error &error) {

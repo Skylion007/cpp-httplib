@@ -222,16 +222,28 @@ inline Generator<std::string_view> stream_body(ClientImpl::StreamHandle handle,
 // stream namespace - C++20 streaming API
 //------------------------------------------------------------------------------
 //
-// Provides a convenient interface for streaming HTTP response bodies.
-// Data is read directly from the socket without buffering.
+// Provides streaming HTTP response handling. Data is read directly from the
+// socket without buffering the entire response in memory. Ideal for:
+//   - Large file downloads
+//   - Server-Sent Events (SSE)
+//   - Any streaming API
+//
+// Note: Connection is not reused (Keep-Alive disabled) since socket ownership
+// is transferred to StreamHandle. For repeated small requests where connection
+// reuse matters, use client.Get() instead.
 //
 // Usage:
-//   auto result = httplib::stream::Get(client, "/large-file");
+//   httplib::Client cli("example.com", 80);
+//   auto result = httplib::stream::Get(cli, "/large-file");
 //   if (result) {
 //     for (auto chunk : result.body()) {
 //       process(chunk);
 //     }
 //   }
+//
+// Also works with SSLClient:
+//   httplib::SSLClient cli("example.com", 443);
+//   auto result = httplib::stream::Get(cli, "/secure-data");
 //
 
 namespace stream {
@@ -291,43 +303,225 @@ private:
   ClientImpl::StreamHandle handle_;
 };
 
-//------------------------------------------------------------------------------
-// Streaming HTTP request functions
-//------------------------------------------------------------------------------
-//
-// stream::Get reads response body directly from the socket without buffering
-// the entire response in memory. This is ideal for:
-//   - Large file downloads
-//   - Server-Sent Events (SSE)
-//   - Any streaming API
-//
-// Note: The connection is not reused (Keep-Alive disabled) since socket
-// ownership is transferred to StreamHandle. For repeated small requests
-// where connection reuse matters, use client.Get() instead.
-//
-// Usage:
-//   auto result = httplib::stream::Get(client, "/huge-file");
-//   for (auto chunk : result.body()) {
-//     write_to_file(chunk);
-//   }
-//
+// GET
 
-inline Result Get(Client &cli, const std::string &path) {
-  return Result{cli.open_stream(path)};
+template <typename ClientType>
+inline Result Get(ClientType &cli, const std::string &path) {
+  return Result{cli.open_stream("GET", path)};
 }
 
-inline Result Get(Client &cli, const std::string &path,
+template <typename ClientType>
+inline Result Get(ClientType &cli, const std::string &path,
                   const Headers &headers) {
-  return Result{cli.open_stream(path, headers)};
+  return Result{cli.open_stream("GET", path, {}, headers)};
 }
 
-inline Result Get(Client &cli, const std::string &path, const Params &params) {
-  return Result{cli.open_stream(append_query_params(path, params))};
+template <typename ClientType>
+inline Result Get(ClientType &cli, const std::string &path,
+                  const Params &params) {
+  return Result{cli.open_stream("GET", path, params)};
 }
 
-inline Result Get(Client &cli, const std::string &path, const Params &params,
-                  const Headers &headers) {
-  return Result{cli.open_stream(append_query_params(path, params), headers)};
+template <typename ClientType>
+inline Result Get(ClientType &cli, const std::string &path,
+                  const Params &params, const Headers &headers) {
+  return Result{cli.open_stream("GET", path, params, headers)};
+}
+
+// POST
+
+template <typename ClientType>
+inline Result Post(ClientType &cli, const std::string &path,
+                   const std::string &body, const std::string &content_type) {
+  return Result{cli.open_stream("POST", path, {}, {}, body, content_type)};
+}
+
+template <typename ClientType>
+inline Result Post(ClientType &cli, const std::string &path,
+                   const Headers &headers, const std::string &body,
+                   const std::string &content_type) {
+  return Result{cli.open_stream("POST", path, {}, headers, body, content_type)};
+}
+
+template <typename ClientType>
+inline Result Post(ClientType &cli, const std::string &path,
+                   const Params &params, const std::string &body,
+                   const std::string &content_type) {
+  return Result{cli.open_stream("POST", path, params, {}, body, content_type)};
+}
+
+template <typename ClientType>
+inline Result Post(ClientType &cli, const std::string &path,
+                   const Params &params, const Headers &headers,
+                   const std::string &body, const std::string &content_type) {
+  return Result{
+      cli.open_stream("POST", path, params, headers, body, content_type)};
+}
+
+// PUT
+
+template <typename ClientType>
+inline Result Put(ClientType &cli, const std::string &path,
+                  const std::string &body, const std::string &content_type) {
+  return Result{cli.open_stream("PUT", path, {}, {}, body, content_type)};
+}
+
+template <typename ClientType>
+inline Result Put(ClientType &cli, const std::string &path,
+                  const Headers &headers, const std::string &body,
+                  const std::string &content_type) {
+  return Result{cli.open_stream("PUT", path, {}, headers, body, content_type)};
+}
+
+template <typename ClientType>
+inline Result Put(ClientType &cli, const std::string &path,
+                  const Params &params, const std::string &body,
+                  const std::string &content_type) {
+  return Result{cli.open_stream("PUT", path, params, {}, body, content_type)};
+}
+
+template <typename ClientType>
+inline Result Put(ClientType &cli, const std::string &path,
+                  const Params &params, const Headers &headers,
+                  const std::string &body, const std::string &content_type) {
+  return Result{
+      cli.open_stream("PUT", path, params, headers, body, content_type)};
+}
+
+// PATCH
+
+template <typename ClientType>
+inline Result Patch(ClientType &cli, const std::string &path,
+                    const std::string &body, const std::string &content_type) {
+  return Result{cli.open_stream("PATCH", path, {}, {}, body, content_type)};
+}
+
+template <typename ClientType>
+inline Result Patch(ClientType &cli, const std::string &path,
+                    const Headers &headers, const std::string &body,
+                    const std::string &content_type) {
+  return Result{
+      cli.open_stream("PATCH", path, {}, headers, body, content_type)};
+}
+
+template <typename ClientType>
+inline Result Patch(ClientType &cli, const std::string &path,
+                    const Params &params, const std::string &body,
+                    const std::string &content_type) {
+  return Result{cli.open_stream("PATCH", path, params, {}, body, content_type)};
+}
+
+template <typename ClientType>
+inline Result Patch(ClientType &cli, const std::string &path,
+                    const Params &params, const Headers &headers,
+                    const std::string &body, const std::string &content_type) {
+  return Result{
+      cli.open_stream("PATCH", path, params, headers, body, content_type)};
+}
+
+// DELETE
+
+template <typename ClientType>
+inline Result Delete(ClientType &cli, const std::string &path) {
+  return Result{cli.open_stream("DELETE", path)};
+}
+
+template <typename ClientType>
+inline Result Delete(ClientType &cli, const std::string &path,
+                     const Headers &headers) {
+  return Result{cli.open_stream("DELETE", path, {}, headers)};
+}
+
+template <typename ClientType>
+inline Result Delete(ClientType &cli, const std::string &path,
+                     const std::string &body, const std::string &content_type) {
+  return Result{cli.open_stream("DELETE", path, {}, {}, body, content_type)};
+}
+
+template <typename ClientType>
+inline Result Delete(ClientType &cli, const std::string &path,
+                     const Headers &headers, const std::string &body,
+                     const std::string &content_type) {
+  return Result{
+      cli.open_stream("DELETE", path, {}, headers, body, content_type)};
+}
+
+template <typename ClientType>
+inline Result Delete(ClientType &cli, const std::string &path,
+                     const Params &params) {
+  return Result{cli.open_stream("DELETE", path, params)};
+}
+
+template <typename ClientType>
+inline Result Delete(ClientType &cli, const std::string &path,
+                     const Params &params, const Headers &headers) {
+  return Result{cli.open_stream("DELETE", path, params, headers)};
+}
+
+template <typename ClientType>
+inline Result Delete(ClientType &cli, const std::string &path,
+                     const Params &params, const std::string &body,
+                     const std::string &content_type) {
+  return Result{
+      cli.open_stream("DELETE", path, params, {}, body, content_type)};
+}
+
+template <typename ClientType>
+inline Result Delete(ClientType &cli, const std::string &path,
+                     const Params &params, const Headers &headers,
+                     const std::string &body, const std::string &content_type) {
+  return Result{
+      cli.open_stream("DELETE", path, params, headers, body, content_type)};
+}
+
+// HEAD
+
+template <typename ClientType>
+inline Result Head(ClientType &cli, const std::string &path) {
+  return Result{cli.open_stream("HEAD", path)};
+}
+
+template <typename ClientType>
+inline Result Head(ClientType &cli, const std::string &path,
+                   const Headers &headers) {
+  return Result{cli.open_stream("HEAD", path, {}, headers)};
+}
+
+template <typename ClientType>
+inline Result Head(ClientType &cli, const std::string &path,
+                   const Params &params) {
+  return Result{cli.open_stream("HEAD", path, params)};
+}
+
+template <typename ClientType>
+inline Result Head(ClientType &cli, const std::string &path,
+                   const Params &params, const Headers &headers) {
+  return Result{cli.open_stream("HEAD", path, params, headers)};
+}
+
+// OPTIONS
+
+template <typename ClientType>
+inline Result Options(ClientType &cli, const std::string &path) {
+  return Result{cli.open_stream("OPTIONS", path)};
+}
+
+template <typename ClientType>
+inline Result Options(ClientType &cli, const std::string &path,
+                      const Headers &headers) {
+  return Result{cli.open_stream("OPTIONS", path, {}, headers)};
+}
+
+template <typename ClientType>
+inline Result Options(ClientType &cli, const std::string &path,
+                      const Params &params) {
+  return Result{cli.open_stream("OPTIONS", path, params)};
+}
+
+template <typename ClientType>
+inline Result Options(ClientType &cli, const std::string &path,
+                      const Params &params, const Headers &headers) {
+  return Result{cli.open_stream("OPTIONS", path, params, headers)};
 }
 
 } // namespace stream

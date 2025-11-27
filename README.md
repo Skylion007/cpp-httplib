@@ -873,6 +873,26 @@ res = cli.Options("*");
 res = cli.Options("/resource/foo");
 ```
 
+### Streaming API (C++20)
+
+Process large responses without loading everything into memory. Requires C++20.
+
+```c++
+#include "httplib.h"
+#include "httplib-stream.h"
+
+httplib::Client cli("localhost", 8080);
+
+auto result = httplib::stream::Get(cli, "/large-file");
+if (result) {
+  for (auto chunk : result.body()) {
+    process(chunk);  // Process each chunk as it arrives
+  }
+}
+```
+
+All HTTP methods are supported: `stream::Get`, `Post`, `Put`, `Patch`, `Delete`, `Head`, `Options`. See `httplib-stream.h` for details.
+
 ### Timeout
 
 ```c++
