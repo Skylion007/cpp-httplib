@@ -968,6 +968,7 @@ bool set_socket_opt_impl(socket_t sock, int level, int optname,
 bool set_socket_opt(socket_t sock, int level, int optname, int opt);
 bool set_socket_opt_time(socket_t sock, int level, int optname, time_t sec,
                          time_t usec);
+int close_socket(socket_t sock);
 
 } // namespace detail
 
@@ -1413,11 +1414,7 @@ struct ClientConnection {
     }
 #endif
     if (sock != INVALID_SOCKET) {
-#ifdef _WIN32
-      closesocket(sock);
-#else
-      close(sock);
-#endif
+      detail::close_socket(sock);
       sock = INVALID_SOCKET;
     }
   }
