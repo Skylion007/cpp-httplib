@@ -107,7 +107,7 @@ jobs:
     - name: Build ${{ matrix.config.name }}
       run: cmake --build build --config Release -- /v:m /clp:ShowCommandLine
     - name: Run C++20 streaming tests ${{ matrix.config.name }}
-      run: ctest --output-on-failure --test-dir build -C Release
+      run: build\test\Release\httplib-test-stream.exe
 
     env:
       VCPKG_ROOT: "C:/vcpkg"
