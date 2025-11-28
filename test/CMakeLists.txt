@@ -57,7 +57,7 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang|AppleClang|MSVC")
             "$<$<CXX_COMPILER_ID:MSVC>:/utf-8;/bigobj>"
         )
         target_link_libraries(httplib-test-stream PRIVATE httplib GTest::gtest_main)
-        gtest_discover_tests(httplib-test-stream)
+        gtest_discover_tests(httplib-test-stream DISCOVERY_TIMEOUT 60)
         message(STATUS "Building httplib-test-stream (C++20 streaming tests)")
     else()
         message(STATUS "C++20 not supported, skipping test-stream")
