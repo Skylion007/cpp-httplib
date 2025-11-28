@@ -105,7 +105,7 @@ jobs:
         -DHTTPLIB_REQUIRE_ZSTD=ON
         -DHTTPLIB_REQUIRE_OPENSSL=${{ matrix.config.with_ssl && 'ON' || 'OFF' }}
     - name: Build ${{ matrix.config.name }}
-      run: cmake --build build --config Release -- /v:m /clp:ShowCommandLine
+      run: cmake --build build --config Release --target httplib-test-stream
     - name: Run C++20 streaming tests ${{ matrix.config.name }}
       run: build\test\Release\httplib-test-stream.exe
 
