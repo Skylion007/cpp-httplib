@@ -11775,39 +11775,8 @@ TEST(BodyReaderTest, Error) {
   EXPECT_EQ(Error::Read, reader.last_error);
 }
 
-TEST(StreamHandleMockTest, SocketDirect) {
-  MockStream stream("Hello from socket!");
-  ClientImpl::StreamHandle handle;
-  handle.response = detail::make_unique<Response>();
-  handle.response->status = 200;
-  handle.stream_ = &stream;
-  handle.body_reader_.stream = &stream;
-  handle.body_reader_.content_length = 18;
-  EXPECT_TRUE(handle.is_socket_direct_mode());
-  EXPECT_EQ("Hello from socket!", read_all(handle));
-}
-
-TEST(StreamHandleMockTest, MemoryBuffer) {
-  ClientImpl::StreamHandle handle;
-  handle.response = detail::make_unique<Response>();
-  handle.response->body = "Memory buffer content";
-  EXPECT_FALSE(handle.is_socket_direct_mode());
-  char buf[32];
-  EXPECT_EQ(21, handle.read(buf, sizeof(buf)));
-}
-
-TEST(StreamHandleMockTest, Error) {
-  MockStream stream("Hello World", 5);
-  ClientImpl::StreamHandle handle;
-  handle.response = detail::make_unique<Response>();
-  handle.stream_ = &stream;
-  handle.body_reader_.stream = &stream;
-  handle.body_reader_.content_length = 11;
-  char buf[32];
-  handle.read(buf, sizeof(buf));
-  handle.read(buf, sizeof(buf));
-  EXPECT_EQ(Error::Read, handle.get_read_error());
-}
+// Memory buffer mode removed: StreamHandle reads only from socket streams.
+// Mock-based StreamHandle tests relying on private internals are removed.
 
 class OpenStreamTest : public ::testing::Test {
 protected:
@@ -11856,7 +11825,6 @@ TEST_F(OpenStreamTest, Basic) {
   Client cli("127.0.0.1", 8787);
   auto handle = cli.open_stream("GET", "/hello");
   EXPECT_TRUE(handle.is_valid());
-  EXPECT_TRUE(handle.is_socket_direct_mode());
   EXPECT_EQ("Hello World!", read_all(handle));
 }
 
@@ -11886,7 +11854,8 @@ TEST_F(OpenStreamTest, ConnectionError) {
 TEST_F(OpenStreamTest, Chunked) {
   Client cli("127.0.0.1", 8787);
   auto handle = cli.open_stream("GET", "/chunked");
-  EXPECT_TRUE(handle.body_reader_.chunked);
+  EXPECT_TRUE(handle.response && handle.response->get_header_value(
+                                     "Transfer-Encoding") == "chunked");
   EXPECT_EQ("chunkchunkchunk", read_all(handle));
 }
 
@@ -11969,7 +11938,6 @@ TEST_F(SSLOpenStreamTest, Basic) {
   cli.enable_server_certificate_verification(false);
   auto handle = cli.open_stream("GET", "/hello");
   ASSERT_TRUE(handle.is_valid());
-  EXPECT_TRUE(handle.is_socket_direct_mode());
   EXPECT_EQ("Hello SSL World!", read_all(handle));
 }
 
@@ -11980,7 +11948,8 @@ TEST_F(SSLOpenStreamTest, Chunked) {
   auto handle = cli.open_stream("GET", "/chunked");
 
   ASSERT_TRUE(handle.is_valid()) << "Error: " << static_cast<int>(handle.error);
-  EXPECT_TRUE(handle.body_reader_.chunked);
+  EXPECT_TRUE(handle.response && handle.response->get_header_value(
+                                     "Transfer-Encoding") == "chunked");
 
   auto body = read_all(handle);
   EXPECT_EQ("chunkchunkchunk", body);
