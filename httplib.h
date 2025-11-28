@@ -1496,14 +1496,44 @@ public:
 
   // Streaming handle for reading response body incrementally
   struct StreamHandle {
-    // Common fields
+    // Public fields
     std::unique_ptr<Response> response;
     Error error = Error::Success;
 
-    // Mode 1: Memory buffer (existing behavior)
-    size_t read_offset_ = 0;
+    // Constructors and assignment operators
+    StreamHandle() = default;
+    StreamHandle(const StreamHandle &) = delete;
+    StreamHandle &operator=(const StreamHandle &) = delete;
+    StreamHandle(StreamHandle &&) = default;
+    StreamHandle &operator=(StreamHandle &&) = default;
 
-    // Mode 2: Socket direct (true streaming)
+    // Destructor: Cleans up socket connection.
+    // In socket direct mode, if the body was not fully read, remaining data
+    // is discarded and the connection is closed (cannot be reused).
+    ~StreamHandle() = default;
+
+    // Check if the handle is valid
+    bool is_valid() const {
+      return response != nullptr && error == Error::Success;
+    }
+
+    // Read up to len bytes into buf, returns number of bytes read (0 at EOF)
+    // Implementation is below decompressor class definition
+    ssize_t read(char *buf, size_t len);
+
+    // Get the last error that occurred during reading (socket direct mode only)
+    Error get_read_error() const { return body_reader_.last_error; }
+
+    // Check if a read error occurred (socket direct mode only)
+    bool has_read_error() const { return body_reader_.has_error(); }
+
+  private:
+    friend class ClientImpl;
+
+    // Read with decompression support (implemented after decompressor class)
+    ssize_t read_with_decompression(char *buf, size_t len);
+
+    // Socket connection ownership
     std::unique_ptr<ClientConnection> connection_; // Socket ownership
     std::unique_ptr<Stream> socket_stream_;        // SocketStream ownership
     Stream *stream_ = nullptr;                     // Stream for reading
@@ -1513,43 +1543,6 @@ public:
     std::unique_ptr<detail::decompressor> decompressor_;
     std::string decompress_buffer_; // Buffer for decompressed data
     size_t decompress_offset_ = 0;  // Read position in decompress_buffer_
-
-    // Default constructor
-    StreamHandle() = default;
-
-    // Move-only semantics (non-copyable due to unique_ptr members)
-    StreamHandle(const StreamHandle &) = delete;
-    StreamHandle &operator=(const StreamHandle &) = delete;
-    StreamHandle(StreamHandle &&) = default;
-    StreamHandle &operator=(StreamHandle &&) = default;
-
-    // Destructor: Cleans up socket connection.
-    // In socket direct mode, if the body was not fully read, remaining data
-    // is discarded and the connection is closed (cannot be reused).
-    // This is safe but may leave unread data in the socket buffer.
-    ~StreamHandle() = default;
-
-    bool is_valid() const {
-      return response != nullptr && error == Error::Success;
-    }
-
-    // Check if using socket direct mode (true streaming)
-    bool is_socket_direct_mode() const { return stream_ != nullptr; }
-
-    // Read up to len bytes into buf, returns number of bytes read (0 at EOF)
-    // Implementation is below decompressor class definition
-    ssize_t read(char *buf, size_t len);
-
-  private:
-    // Read with decompression support (implemented after decompressor class)
-    ssize_t read_with_decompression(char *buf, size_t len);
-
-  public:
-    // Get the last error that occurred during reading (socket direct mode only)
-    Error get_read_error() const { return body_reader_.last_error; }
-
-    // Check if a read error occurred (socket direct mode only)
-    bool has_read_error() const { return body_reader_.has_error(); }
   };
 
   // clang-format off
@@ -2923,21 +2916,8 @@ inline bool is_field_value(const std::string &s) { return is_field_content(s); }
 inline ssize_t ClientImpl::StreamHandle::read(char *buf, size_t len) {
   if (!is_valid() || !response) { return -1; }
 
-  if (is_socket_direct_mode()) {
-    // Socket direct mode: read from stream via BodyReader
-    if (decompressor_) { return read_with_decompression(buf, len); }
-    return body_reader_.read(buf, len);
-  } else {
-    // Memory buffer mode: read from pre-loaded response body
-    const auto &body = response->body;
-    if (read_offset_ >= body.size()) { return 0; }
-
-    auto remaining = body.size() - read_offset_;
-    auto to_read = (std::min)(len, remaining);
-    std::memcpy(buf, body.data() + read_offset_, to_read);
-    read_offset_ += to_read;
-    return static_cast<ssize_t>(to_read);
-  }
+  if (decompressor_) { return read_with_decompression(buf, len); }
+  return body_reader_.read(buf, len);
 }
 
 inline ssize_t ClientImpl::StreamHandle::read_with_decompression(char *buf,

@@ -107,8 +107,9 @@ if (handle.is_valid()) {
 | `response` | `std::unique_ptr<Response>` | HTTP response with headers |
 | `error` | `Error` | Error code if request failed |
 | `is_valid()` | `bool` | Returns true if response is valid |
-| `is_socket_direct_mode()` | `bool` | Returns true (always direct socket reading) |
 | `read(buf, len)` | `ssize_t` | Read up to `len` bytes directly from socket |
+| `get_read_error()` | `Error` | Get the last read error |
+| `has_read_error()` | `bool` | Check if a read error occurred |
 
 ### High-Level API: `stream::Get()` and `stream::Result`
 
