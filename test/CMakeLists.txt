@@ -32,36 +32,24 @@ target_link_libraries(httplib-test PRIVATE httplib GTest::gtest_main CURL::libcu
 gtest_discover_tests(httplib-test)
 
 # C++20 streaming API tests
-if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang|AppleClang|MSVC")
-    # Check for C++20 support using CMake's compile features
-    # This is more reliable than checking compiler flags
-    if(MSVC)
-        # MSVC 19.29+ (VS 2019 16.10+) supports C++20 coroutines
-        if(MSVC_VERSION GREATER_EQUAL 1929)
-            set(COMPILER_SUPPORTS_CXX20 TRUE)
-        else()
-            set(COMPILER_SUPPORTS_CXX20 FALSE)
-        endif()
-    else()
-        include(CheckCXXCompilerFlag)
-        check_cxx_compiler_flag("-std=c++20" COMPILER_SUPPORTS_CXX20)
+if(MSVC)
+    # MSVC 19.29+ (VS 2019 16.10+) supports C++20 coroutines
+    if(MSVC_VERSION GREATER_EQUAL 1929)
+        set(COMPILER_SUPPORTS_CXX20 TRUE)
     endif()
+else()
+    include(CheckCXXCompilerFlag)
+    check_cxx_compiler_flag("-std=c++20" COMPILER_SUPPORTS_CXX20)
+endif()
 
-    message(STATUS "Compiler: ${CMAKE_CXX_COMPILER_ID}, MSVC_VERSION: ${MSVC_VERSION}")
-    message(STATUS "C++20 support: ${COMPILER_SUPPORTS_CXX20}")
-
-    if(COMPILER_SUPPORTS_CXX20)
-        add_executable(httplib-test-stream test-stream.cc)
-        target_compile_features(httplib-test-stream PRIVATE cxx_std_20)
-        target_compile_options(httplib-test-stream PRIVATE
-            "$<$<CXX_COMPILER_ID:MSVC>:/utf-8;/bigobj>"
-        )
-        target_link_libraries(httplib-test-stream PRIVATE httplib GTest::gtest_main)
-        gtest_discover_tests(httplib-test-stream DISCOVERY_TIMEOUT 60)
-        message(STATUS "Building httplib-test-stream (C++20 streaming tests)")
-    else()
-        message(STATUS "C++20 not supported, skipping test-stream")
-    endif()
+if(COMPILER_SUPPORTS_CXX20)
+    add_executable(httplib-test-stream test-stream.cc)
+    target_compile_features(httplib-test-stream PRIVATE cxx_std_20)
+    target_compile_options(httplib-test-stream PRIVATE
+        "$<$<CXX_COMPILER_ID:MSVC>:/utf-8;/bigobj>"
+    )
+    target_link_libraries(httplib-test-stream PRIVATE httplib GTest::gtest_main)
+    gtest_discover_tests(httplib-test-stream)
 endif()
 
 file(
