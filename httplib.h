@@ -12885,7 +12885,7 @@ inline SSL_CTX *Client::ssl_context() const {
  *   When C++23 is adopted, Generator<T> can be replaced with std::generator<T>.
  */
 
-#if __cplusplus >= 202002L
+#if __cplusplus >= 202002L || (defined(_MSVC_LANG) && _MSVC_LANG >= 202002L)
 
 #include <coroutine>
 #include <string_view>
@@ -13311,6 +13311,6 @@ inline Result Options(ClientType &cli, const std::string &path,
 
 } // namespace httplib
 
-#endif // __cplusplus >= 202002L
+#endif // __cplusplus >= 202002L || _MSVC_LANG >= 202002L
 
 #endif // CPPHTTPLIB_HTTPLIB_H
