@@ -106,6 +106,10 @@ jobs:
         -DHTTPLIB_REQUIRE_OPENSSL=${{ matrix.config.with_ssl && 'ON' || 'OFF' }}
     - name: Build ${{ matrix.config.name }}
       run: cmake --build build --config Release -- /v:m /clp:ShowCommandLine
+    - name: Debug - List test executable
+      run: |
+        dir build\test\Release\
+        build\test\Release\httplib-test-stream.exe --gtest_list_tests
     - name: Run C++20 streaming tests ${{ matrix.config.name }}
       run: ctest --output-on-failure --test-dir build -C Release -R "httplib-test-stream"
 
