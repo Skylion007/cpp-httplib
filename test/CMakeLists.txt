@@ -33,14 +33,21 @@ gtest_discover_tests(httplib-test)
 
 # C++20 streaming API tests
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang|AppleClang|MSVC")
-    # Check for C++20 support
-    include(CheckCXXCompilerFlag)
+    # Check for C++20 support using CMake's compile features
+    # This is more reliable than checking compiler flags
     if(MSVC)
-        check_cxx_compiler_flag("/std:c++20" COMPILER_SUPPORTS_CXX20)
+        # MSVC 19.29+ (VS 2019 16.10+) supports C++20 coroutines
+        if(MSVC_VERSION GREATER_EQUAL 1929)
+            set(COMPILER_SUPPORTS_CXX20 TRUE)
+        else()
+            set(COMPILER_SUPPORTS_CXX20 FALSE)
+        endif()
     else()
+        include(CheckCXXCompilerFlag)
         check_cxx_compiler_flag("-std=c++20" COMPILER_SUPPORTS_CXX20)
     endif()
 
+    message(STATUS "Compiler: ${CMAKE_CXX_COMPILER_ID}, MSVC_VERSION: ${MSVC_VERSION}")
     message(STATUS "C++20 support: ${COMPILER_SUPPORTS_CXX20}")
 
     if(COMPILER_SUPPORTS_CXX20)
