@@ -5013,7 +5013,10 @@ inline bool read_content_with_length(Stream &strm, size_t len,
     }
   }
 
-  return off == len || off <= len;
+  // If BodyReader recorded an error (e.g. unexpected EOF), consider this
+  // a failure. Also ensure we read exactly the declared Content-Length.
+  if (br.has_error()) { return false; }
+  return off == len;
 }
 
 inline void skip_content_with_length(Stream &strm, size_t len) {

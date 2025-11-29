@@ -11840,6 +11840,160 @@ TEST(BodyReaderTest, PayloadLimit) {
   EXPECT_EQ(detail::ReadContentResult::PayloadTooLarge, result);
 }
 
+TEST(BodyReaderTest, ProhibitedTrailersAreIgnored) {
+  // Chunked body with declared Trailer header that includes a prohibited header
+  // Chunks: "4\r\nWiki\r\n5\r\npedia\r\n0\r\nContent-Length: 5\r\nX-Allowed:
+  // yes\r\n\r\n"
+  MockStream stream("4\r\nWiki\r\n5\r\npedia\r\n0\r\nContent-Length: "
+                    "5\r\nX-Allowed: yes\r\n\r\n");
+  Response res;
+  // Client declared both a prohibited and an allowed trailer
+  res.headers.emplace("Trailer", "Content-Length, X-Allowed");
+
+  std::string body;
+  auto receiver = [&](const char *buf, size_t n, size_t off, size_t len) {
+    body.append(buf, n);
+    return true;
+  };
+
+  auto result =
+      detail::read_content_chunked(stream, res, (size_t)1024, receiver);
+  EXPECT_EQ(detail::ReadContentResult::Success, result);
+  EXPECT_EQ(std::string("Wikipedia"), body);
+  // Prohibited trailer must not be present
+  EXPECT_FALSE(res.has_trailer("Content-Length"));
+  // Allowed trailer should be present
+  EXPECT_TRUE(res.has_trailer("X-Allowed"));
+  EXPECT_EQ(std::string("yes"), res.get_trailer_value("X-Allowed"));
+}
+
+TEST(BodyReaderTest, UndeclaredTrailersAreIgnored) {
+  // Chunked body with a trailer that is NOT declared in the Trailer header
+  MockStream stream("4\r\nWiki\r\n0\r\nX-NotDeclared: v\r\n\r\n");
+  Response res; // no Trailer header
+
+  std::string body;
+  auto receiver = [&](const char *buf, size_t n, size_t off, size_t len) {
+    body.append(buf, n);
+    return true;
+  };
+
+  auto result =
+      detail::read_content_chunked(stream, res, (size_t)1024, receiver);
+  EXPECT_EQ(detail::ReadContentResult::Success, result);
+  EXPECT_EQ(std::string("Wiki"), body);
+  // Trailer not declared should be ignored
+  EXPECT_FALSE(res.has_trailer("X-NotDeclared"));
+}
+
+TEST(BodyReaderTest, ContentLength_ExactMatch) {
+  // Stream contains exactly the number of bytes declared by Content-Length
+  MockStream stream("Hello");
+  Response res;
+  res.headers.emplace("Content-Length", "5");
+
+  std::string body;
+  auto receiver = [&](const char *buf, size_t n, size_t off, size_t len) {
+    body.append(buf, n);
+    return true;
+  };
+
+  int status = 0;
+  auto ok = detail::read_content(stream, res, (size_t)1024, status, nullptr,
+                                 receiver, false);
+  EXPECT_TRUE(ok);
+  EXPECT_EQ(0, status);
+  EXPECT_EQ(std::string("Hello"), body);
+}
+
+TEST(BodyReaderTest, ContentLength_Short_EOF) {
+  // Declared Content-Length is larger than available bytes -> early EOF
+  MockStream stream("Hi");
+  Response res;
+  res.headers.emplace("Content-Length", "5");
+
+  std::string body;
+  auto receiver = [&](const char *buf, size_t n, size_t off, size_t len) {
+    body.append(buf, n);
+    return true;
+  };
+
+  int status = 0;
+  auto ok = detail::read_content(stream, res, (size_t)1024, status, nullptr,
+                                 receiver, false);
+  // Declared length (5) is larger than available bytes; this should be
+  // treated as a protocol error (early EOF) and reported as failure.
+  EXPECT_FALSE(ok);
+  EXPECT_EQ(StatusCode::BadRequest_400, status);
+  EXPECT_EQ(std::string("Hi"), body);
+}
+
+TEST(BodyReaderTest, ContentLength_Exceeds_PayloadMax) {
+  // Declared Content-Length exceeds payload_max_length -> PayloadTooLarge
+  MockStream stream("abcd");
+  Response res;
+  res.headers.emplace("Content-Length", "4096");
+
+  std::string body;
+  auto receiver = [&](const char *buf, size_t n, size_t off, size_t len) {
+    body.append(buf, n);
+    return true;
+  };
+
+  int status = 0;
+  // payload_max_length set to 2 (smaller than declared 4096)
+  auto ok = detail::read_content(stream, res, (size_t)2, status, nullptr,
+                                 receiver, false);
+  EXPECT_FALSE(ok);
+  EXPECT_EQ(StatusCode::PayloadTooLarge_413, status);
+}
+
+TEST(ClientTest, ContentLength_Short_EOF_NonStreaming) {
+  // Start a raw TCP server that sends a response with a declared
+  // Content-Length larger than the actual body (truncated body).
+  int ls = ::socket(AF_INET, SOCK_STREAM, 0);
+  ASSERT_TRUE(ls >= 0);
+
+  int on = 1;
+  ::setsockopt(ls, SOL_SOCKET, SO_REUSEADDR, &on, sizeof(on));
+
+  struct sockaddr_in addr;
+  memset(&addr, 0, sizeof(addr));
+  addr.sin_family = AF_INET;
+  addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+  addr.sin_port = 0; // let OS pick a free port
+
+  ASSERT_EQ(0, ::bind(ls, (struct sockaddr *)&addr, sizeof(addr)));
+
+  socklen_t addr_len = sizeof(addr);
+  ASSERT_EQ(0, ::getsockname(ls, (struct sockaddr *)&addr, &addr_len));
+  int port = ntohs(addr.sin_port);
+
+  ASSERT_EQ(0, ::listen(ls, 1));
+
+  std::thread svr_thread([ls]() {
+    int cs = ::accept(ls, nullptr, nullptr);
+    if (cs >= 0) {
+      const char *resp =
+          "HTTP/1.1 200 OK\r\nContent-Length: 5\r\nConnection: close\r\n\r\nHi";
+      ::send(cs, resp, (ssize_t)strlen(resp), 0);
+      ::close(cs);
+    }
+    ::close(ls);
+  });
+
+  // Create a client and request the truncated response.
+  Client cli("127.0.0.1", port);
+  auto res = cli.Get("/");
+
+  // The client should report a read error because the body is shorter
+  // than the declared Content-Length.
+  ASSERT_FALSE(res);
+  EXPECT_EQ(Error::Read, res.error());
+
+  svr_thread.join();
+}
+
 // Memory buffer mode removed: StreamHandle reads only from socket streams.
 // Mock-based StreamHandle tests relying on private internals are removed.
 
