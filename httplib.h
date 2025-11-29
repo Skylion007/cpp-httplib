@@ -1531,11 +1531,18 @@ public:
     // Implementation is below decompressor class definition
     ssize_t read(char *buf, size_t len);
 
+    // Parse trailers for chunked responses if they have not been parsed yet.
+    // Public to allow tests to trigger parsing explicitly when needed.
+    void parse_trailers_if_needed();
+
     // Get the last error that occurred during reading (socket direct mode only)
     Error get_read_error() const { return body_reader_.last_error; }
 
     // Check if a read error occurred (socket direct mode only)
     bool has_read_error() const { return body_reader_.has_error(); }
+
+    // Whether trailers have been parsed for chunked transfer
+    bool trailers_parsed_ = false;
 
   private:
     friend class ClientImpl;
@@ -2929,7 +2936,118 @@ inline ssize_t ClientImpl::StreamHandle::read(char *buf, size_t len) {
   if (!is_valid() || !response) { return -1; }
 
   if (decompressor_) { return read_with_decompression(buf, len); }
-  return body_reader_.read(buf, len);
+  auto n = detail::read_body_content(stream_, body_reader_, buf, len);
+
+  // If we hit EOF on a chunked response, parse trailers once so callers can
+  // observe them via `response->trailers`.
+  if (n <= 0 && body_reader_.chunked && !trailers_parsed_ && stream_) {
+    trailers_parsed_ = true;
+
+    // Read first line; if there's no CRLF/trailer block, nothing to do.
+    const auto bufsiz = 128;
+    char line_buf[bufsiz];
+    detail::stream_line_reader line_reader(*stream_, line_buf, bufsiz);
+
+    if (!line_reader.getline()) { return n; }
+
+    // RFC 7230 Section 4.1.2 - Headers prohibited in trailers
+    thread_local detail::case_ignore::unordered_set<std::string>
+        prohibited_trailers = {"transfer-encoding",
+                               "content-length",
+                               "host",
+                               "authorization",
+                               "www-authenticate",
+                               "proxy-authenticate",
+                               "proxy-authorization",
+                               "cookie",
+                               "set-cookie",
+                               "cache-control",
+                               "expect",
+                               "max-forwards",
+                               "pragma",
+                               "range",
+                               "te",
+                               "age",
+                               "expires",
+                               "date",
+                               "location",
+                               "retry-after",
+                               "vary",
+                               "warning",
+                               "content-encoding",
+                               "content-type",
+                               "content-range",
+                               "trailer"};
+
+    detail::case_ignore::unordered_set<std::string> declared_trailers;
+    auto trailer_header = response->get_header_value("Trailer");
+    if (!trailer_header.empty()) {
+      auto lenh = trailer_header.size();
+      detail::split(trailer_header.c_str(), trailer_header.c_str() + lenh, ',',
+                    [&](const char *b, const char *e) {
+                      const char *kbeg = b;
+                      const char *kend = e;
+                      while (kbeg < kend && (*kbeg == ' ' || *kbeg == '\t')) {
+                        ++kbeg;
+                      }
+                      while (kend > kbeg &&
+                             (kend[-1] == ' ' || kend[-1] == '\t')) {
+                        --kend;
+                      }
+                      std::string key(kbeg, static_cast<size_t>(kend - kbeg));
+                      if (!key.empty() && prohibited_trailers.find(key) ==
+                                              prohibited_trailers.end()) {
+                        declared_trailers.insert(key);
+                      }
+                    });
+    }
+
+    size_t trailer_header_count = 0;
+    while (strcmp(line_reader.ptr(), "\r\n") != 0) {
+      if (line_reader.size() > CPPHTTPLIB_HEADER_MAX_LENGTH) { break; }
+      if (trailer_header_count >= CPPHTTPLIB_HEADER_MAX_COUNT) { break; }
+
+      constexpr auto line_terminator_len = 2;
+      auto line_beg = line_reader.ptr();
+      auto line_end =
+          line_reader.ptr() + line_reader.size() - line_terminator_len;
+
+      // Parse header key/value and trim
+      const char *colon = std::find(line_beg, line_end, ':');
+      if (colon != line_end) {
+        const char *kbeg = line_beg;
+        const char *kend = colon;
+        while (kbeg < kend && (*kbeg == ' ' || *kbeg == '\t')) {
+          ++kbeg;
+        }
+        while (kend > kbeg && (kend[-1] == ' ' || kend[-1] == '\t')) {
+          --kend;
+        }
+        const std::string key(kbeg, static_cast<size_t>(kend - kbeg));
+
+        const char *vbeg = colon + 1;
+        const char *vend = line_end;
+        while (vbeg < vend && (*vbeg == ' ' || *vbeg == '\t')) {
+          ++vbeg;
+        }
+        while (vend > vbeg && (vend[-1] == ' ' || vend[-1] == '\t')) {
+          --vend;
+        }
+        const std::string val(vbeg, static_cast<size_t>(vend - vbeg));
+
+        if (!key.empty()) {
+          if (declared_trailers.find(key) != declared_trailers.end()) {
+            response->trailers.emplace(key, val);
+            trailer_header_count++;
+          }
+        }
+      }
+
+      if (!line_reader.getline()) { break; }
+    }
+  }
+
+  return n;
 }
 
 inline ssize_t ClientImpl::StreamHandle::read_with_decompression(char *buf,
@@ -2948,26 +3066,34 @@ inline ssize_t ClientImpl::StreamHandle::read_with_decompression(char *buf,
   decompress_offset_ = 0;
 
   char compressed_buf[8192];
-  auto n = body_reader_.read(compressed_buf, sizeof(compressed_buf));
 
-  if (n <= 0) { return n; } // EOF or error
+  // Read compressed data via the centralized helper. Loop until decompressor
+  // produces output or EOF/error occurs. This avoids recursion and makes the
+  // decompression buffering behavior explicit.
+  while (true) {
+    auto n = detail::read_body_content(stream_, body_reader_, compressed_buf,
+                                       sizeof(compressed_buf));
 
-  // Decompress the data
-  bool decompress_ok =
-      decompressor_->decompress(compressed_buf, static_cast<size_t>(n),
-                                [this](const char *data, size_t data_len) {
-                                  decompress_buffer_.append(data, data_len);
-                                  return true;
-                                });
+    if (n <= 0) { return n; } // EOF or error
 
-  if (!decompress_ok) {
-    body_reader_.last_error = Error::Read;
-    return -1;
-  }
+    // Decompress the data
+    bool decompress_ok =
+        decompressor_->decompress(compressed_buf, static_cast<size_t>(n),
+                                  [this](const char *data, size_t data_len) {
+                                    decompress_buffer_.append(data, data_len);
+                                    return true;
+                                  });
 
-  if (decompress_buffer_.empty()) {
-    // Decompressor needs more data, try again
-    return read_with_decompression(buf, len);
+    if (!decompress_ok) {
+      body_reader_.last_error = Error::Read;
+      return -1;
+    }
+
+    if (!decompress_buffer_.empty()) {
+      break; // we have output to return
+    }
+
+    // Otherwise continue reading more compressed data
   }
 
   // Return from the newly decompressed buffer
@@ -2975,6 +3101,113 @@ inline ssize_t ClientImpl::StreamHandle::read_with_decompression(char *buf,
   std::memcpy(buf, decompress_buffer_.data(), to_copy);
   decompress_offset_ = to_copy;
   return static_cast<ssize_t>(to_copy);
+}
+
+inline void ClientImpl::StreamHandle::parse_trailers_if_needed() {
+  if (!response || !stream_ || !body_reader_.chunked || trailers_parsed_) {
+    return;
+  }
+
+  trailers_parsed_ = true;
+
+  const auto bufsiz = 128;
+  char line_buf[bufsiz];
+  detail::stream_line_reader line_reader(*stream_, line_buf, bufsiz);
+
+  if (!line_reader.getline()) { return; }
+
+  thread_local detail::case_ignore::unordered_set<std::string>
+      prohibited_trailers = {"transfer-encoding",
+                             "content-length",
+                             "host",
+                             "authorization",
+                             "www-authenticate",
+                             "proxy-authenticate",
+                             "proxy-authorization",
+                             "cookie",
+                             "set-cookie",
+                             "cache-control",
+                             "expect",
+                             "max-forwards",
+                             "pragma",
+                             "range",
+                             "te",
+                             "age",
+                             "expires",
+                             "date",
+                             "location",
+                             "retry-after",
+                             "vary",
+                             "warning",
+                             "content-encoding",
+                             "content-type",
+                             "content-range",
+                             "trailer"};
+
+  detail::case_ignore::unordered_set<std::string> declared_trailers;
+  auto trailer_header = response->get_header_value("Trailer");
+  if (!trailer_header.empty()) {
+    auto lenh = trailer_header.size();
+    detail::split(trailer_header.c_str(), trailer_header.c_str() + lenh, ',',
+                  [&](const char *b, const char *e) {
+                    const char *kbeg = b;
+                    const char *kend = e;
+                    while (kbeg < kend && (*kbeg == ' ' || *kbeg == '\t')) {
+                      ++kbeg;
+                    }
+                    while (kend > kbeg &&
+                           (kend[-1] == ' ' || kend[-1] == '\t')) {
+                      --kend;
+                    }
+                    std::string key(kbeg, static_cast<size_t>(kend - kbeg));
+                    if (!key.empty() && prohibited_trailers.find(key) ==
+                                            prohibited_trailers.end()) {
+                      declared_trailers.insert(key);
+                    }
+                  });
+  }
+
+  size_t trailer_header_count = 0;
+  while (strcmp(line_reader.ptr(), "\r\n") != 0) {
+    if (line_reader.size() > CPPHTTPLIB_HEADER_MAX_LENGTH) { break; }
+    if (trailer_header_count >= CPPHTTPLIB_HEADER_MAX_COUNT) { break; }
+
+    constexpr auto line_terminator_len = 2;
+    auto line_beg = line_reader.ptr();
+    auto line_end =
+        line_reader.ptr() + line_reader.size() - line_terminator_len;
+
+    const char *colon = std::find(line_beg, line_end, ':');
+    if (colon != line_end) {
+      const char *kbeg = line_beg;
+      const char *kend = colon;
+      while (kbeg < kend && (*kbeg == ' ' || *kbeg == '\t')) {
+        ++kbeg;
+      }
+      while (kend > kbeg && (kend[-1] == ' ' || kend[-1] == '\t')) {
+        --kend;
+      }
+      const std::string key(kbeg, static_cast<size_t>(kend - kbeg));
+
+      const char *vbeg = colon + 1;
+      const char *vend = line_end;
+      while (vbeg < vend && (*vbeg == ' ' || *vbeg == '\t')) {
+        ++vbeg;
+      }
+      while (vend > vbeg && (vend[-1] == ' ' || vend[-1] == '\t')) {
+        --vend;
+      }
+      const std::string val(vbeg, static_cast<size_t>(vend - vbeg));
+
+      if (!key.empty() &&
+          declared_trailers.find(key) != declared_trailers.end()) {
+        response->trailers.emplace(key, val);
+        trailer_header_count++;
+      }
+    }
+
+    if (!line_reader.getline()) { break; }
+  }
 }
 
 // ----------------------------------------------------------------------------
@@ -4869,6 +5102,33 @@ inline bool zstd_decompressor::decompress(const char *data, size_t data_length,
 }
 #endif
 
+// Create a decompressor instance based on the Content-Encoding header.
+// Returns nullptr when no suitable decompressor is available (either the
+// encoding is unknown or support for that encoding was not compiled in).
+inline std::unique_ptr<decompressor>
+create_decompressor(const std::string &encoding) {
+  std::unique_ptr<decompressor> decompressor;
+
+  if (encoding == "gzip" || encoding == "deflate") {
+#ifdef CPPHTTPLIB_ZLIB_SUPPORT
+    decompressor = detail::make_unique<gzip_decompressor>();
+#endif
+  } else if (encoding.find("br") != std::string::npos) {
+#ifdef CPPHTTPLIB_BROTLI_SUPPORT
+    decompressor = detail::make_unique<brotli_decompressor>();
+#endif
+  } else if (encoding == "zstd" || encoding.find("zstd") != std::string::npos) {
+#ifdef CPPHTTPLIB_ZSTD_SUPPORT
+    decompressor = detail::make_unique<zstd_decompressor>();
+#endif
+  }
+
+  return decompressor;
+}
+
+// `detail::create_decompressor(...)` is implemented here in the current
+// `detail` namespace (no additional wrapper needed).
+
 inline bool is_prohibited_header_name(const std::string &name) {
   using udl::operator""_t;
 
@@ -5231,27 +5491,13 @@ bool prepare_content_receiver(T &x, int &status,
     std::string encoding = x.get_header_value("Content-Encoding");
     std::unique_ptr<decompressor> decompressor;
 
-    if (encoding == "gzip" || encoding == "deflate") {
-#ifdef CPPHTTPLIB_ZLIB_SUPPORT
-      decompressor = detail::make_unique<gzip_decompressor>();
-#else
-      status = StatusCode::UnsupportedMediaType_415;
-      return false;
-#endif
-    } else if (encoding.find("br") != std::string::npos) {
-#ifdef CPPHTTPLIB_BROTLI_SUPPORT
-      decompressor = detail::make_unique<brotli_decompressor>();
-#else
-      status = StatusCode::UnsupportedMediaType_415;
-      return false;
-#endif
-    } else if (encoding == "zstd") {
-#ifdef CPPHTTPLIB_ZSTD_SUPPORT
-      decompressor = detail::make_unique<zstd_decompressor>();
-#else
-      status = StatusCode::UnsupportedMediaType_415;
-      return false;
-#endif
+    if (!encoding.empty()) {
+      decompressor = detail::create_decompressor(encoding);
+      if (!decompressor) {
+        // Unsupported encoding or no support compiled in
+        status = StatusCode::UnsupportedMediaType_415;
+        return false;
+      }
     }
 
     if (decompressor) {
@@ -9503,28 +9749,11 @@ ClientImpl::open_stream(const std::string &method, const std::string &path,
       handle.response->get_header_value("Transfer-Encoding");
   handle.body_reader_.chunked = (transfer_encoding == "chunked");
 
-  // Set up decompressor based on Content-Encoding
+  // Set up decompressor based on Content-Encoding (use centralized factory)
   auto content_encoding = handle.response->get_header_value("Content-Encoding");
   if (!content_encoding.empty()) {
-#ifdef CPPHTTPLIB_ZLIB_SUPPORT
-    if (content_encoding == "gzip" || content_encoding == "deflate") {
-      handle.decompressor_ = detail::make_unique<detail::gzip_decompressor>();
-    } else
-#endif
-#ifdef CPPHTTPLIB_BROTLI_SUPPORT
-        if (content_encoding == "br") {
-      handle.decompressor_ = detail::make_unique<detail::brotli_decompressor>();
-    } else
-#endif
-#ifdef CPPHTTPLIB_ZSTD_SUPPORT
-        if (content_encoding == "zstd") {
-      handle.decompressor_ = detail::make_unique<detail::zstd_decompressor>();
-    } else
-#endif
-    {
-      // Unsupported encoding - leave decompressor_ null
-      // Data will be returned as-is (compressed)
-    }
+    handle.decompressor_ = detail::create_decompressor(content_encoding);
+    // If nullptr is returned, leave decompressor_ null and return data as-is
   }
 
   return handle;

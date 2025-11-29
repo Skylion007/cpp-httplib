@@ -3198,6 +3198,33 @@ protected:
                      return true;
                    });
              })
+        .Get("/streamed-chunked-with-prohibited-trailer",
+             [&](const Request & /*req*/, Response &res) {
+               auto i = new int(0);
+               // Declare both a prohibited trailer (Content-Length) and an
+               // allowed one
+               res.set_header("Trailer", "Content-Length, X-Allowed");
+
+               res.set_chunked_content_provider(
+                   "text/plain",
+                   [i](size_t /*offset*/, DataSink &sink) {
+                     switch (*i) {
+                     case 0: sink.os << "123"; break;
+                     case 1: sink.os << "456"; break;
+                     case 2: sink.os << "789"; break;
+                     case 3: {
+                       sink.done_with_trailer(
+                           {{"Content-Length", "5"}, {"X-Allowed", "yes"}});
+                     } break;
+                     }
+                     (*i)++;
+                     return true;
+                   },
+                   [i](bool success) {
+                     EXPECT_TRUE(success);
+                     delete i;
+                   });
+             })
         .Get("/streamed-chunked2",
              [&](const Request & /*req*/, Response &res) {
                auto i = new int(0);
@@ -11810,6 +11837,33 @@ protected:
         return true;
       });
     });
+
+    svr_.Get("/streamed-chunked-with-prohibited-trailer",
+             [](const Request & /*req*/, Response &res) {
+               auto i = new int(0);
+               // Declare both a prohibited trailer (Content-Length) and an
+               // allowed one
+               res.set_header("Trailer", "Content-Length, X-Allowed");
+               res.set_chunked_content_provider(
+                   "text/plain",
+                   [i](size_t /*offset*/, DataSink &sink) {
+                     switch (*i) {
+                     case 0: sink.os << "123"; break;
+                     case 1: sink.os << "456"; break;
+                     case 2: sink.os << "789"; break;
+                     case 3: {
+                       sink.done_with_trailer(
+                           {{"Content-Length", "5"}, {"X-Allowed", "yes"}});
+                     } break;
+                     }
+                     (*i)++;
+                     return true;
+                   },
+                   [i](bool success) {
+                     EXPECT_TRUE(success);
+                     delete i;
+                   });
+             });
     // Echo headers endpoint for header-related tests
     svr_.Get("/echo-headers", [](const Request &req, Response &res) {
       std::string body;
@@ -11942,6 +11996,38 @@ TEST_F(OpenStreamTest, Chunked) {
   EXPECT_TRUE(handle.response && handle.response->get_header_value(
                                      "Transfer-Encoding") == "chunked");
   EXPECT_EQ("chunkchunkchunk", read_all(handle));
+}
+
+TEST_F(OpenStreamTest, ProhibitedTrailersAreIgnored_Stream) {
+  Client cli("127.0.0.1", 8787);
+  auto handle =
+      cli.open_stream("GET", "/streamed-chunked-with-prohibited-trailer");
+  ASSERT_TRUE(handle.is_valid());
+
+  // Consume body to allow trailers to be received/parsed
+  auto body = read_all(handle);
+
+  // Explicitly parse trailers (ensure trailers are available for assertion)
+  handle.parse_trailers_if_needed();
+  EXPECT_EQ(std::string("123456789"), body);
+
+  // The response should include a Trailer header declaring both names
+  ASSERT_TRUE(handle.response);
+  EXPECT_TRUE(handle.response->has_header("Trailer"));
+  EXPECT_EQ(std::string("Content-Length, X-Allowed"),
+            handle.response->get_header_value("Trailer"));
+
+  // Prohibited trailer must not be present
+  EXPECT_FALSE(handle.response->has_trailer("Content-Length"));
+  // Allowed trailer should be present
+  EXPECT_TRUE(handle.response->has_trailer("X-Allowed"));
+  EXPECT_EQ(std::string("yes"),
+            handle.response->get_trailer_value("X-Allowed"));
+
+  // Verify trailers are NOT present as regular headers
+  EXPECT_EQ(std::string(""),
+            handle.response->get_header_value("Content-Length"));
+  EXPECT_EQ(std::string(""), handle.response->get_header_value("X-Allowed"));
 }
 
 #ifdef CPPHTTPLIB_ZLIB_SUPPORT
