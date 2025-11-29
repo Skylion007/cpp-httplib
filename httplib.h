@@ -1867,6 +1867,8 @@ private:
                           Response &res) const;
   bool write_request(Stream &strm, Request &req, bool close_connection,
                      Error &error);
+  void prepare_default_headers(Request &r, bool for_stream,
+                               const std::string &ct);
   bool redirect(Request &req, Response &res, Error &error);
   bool create_redirect_client(const std::string &scheme,
                               const std::string &host, int port, Request &req,
@@ -9272,6 +9274,58 @@ inline Result ClientImpl::send_(Request &&req) {
 #endif
 }
 
+inline void ClientImpl::prepare_default_headers(Request &r, bool for_stream,
+                                                const std::string &ct) {
+  (void)for_stream;
+  for (const auto &header : default_headers_) {
+    if (!r.has_header(header.first)) { r.headers.insert(header); }
+  }
+
+  if (!r.has_header("Host")) {
+    if (address_family_ == AF_UNIX) {
+      r.headers.emplace("Host", "localhost");
+    } else {
+      r.headers.emplace("Host", host_and_port_);
+    }
+  }
+
+  if (!r.has_header("Accept")) { r.headers.emplace("Accept", "*/*"); }
+
+  if (!r.content_receiver) {
+    if (!r.has_header("Accept-Encoding")) {
+      std::string accept_encoding;
+#ifdef CPPHTTPLIB_BROTLI_SUPPORT
+      accept_encoding = "br";
+#endif
+#ifdef CPPHTTPLIB_ZLIB_SUPPORT
+      if (!accept_encoding.empty()) { accept_encoding += ", "; }
+      accept_encoding += "gzip, deflate";
+#endif
+#ifdef CPPHTTPLIB_ZSTD_SUPPORT
+      if (!accept_encoding.empty()) { accept_encoding += ", "; }
+      accept_encoding += "zstd";
+#endif
+      r.set_header("Accept-Encoding", accept_encoding);
+    }
+
+#ifndef CPPHTTPLIB_NO_DEFAULT_USER_AGENT
+    if (!r.has_header("User-Agent")) {
+      auto agent = std::string("cpp-httplib/") + CPPHTTPLIB_VERSION;
+      r.set_header("User-Agent", agent);
+    }
+#endif
+  }
+
+  if (!r.body.empty()) {
+    if (!ct.empty() && !r.has_header("Content-Type")) {
+      r.headers.emplace("Content-Type", ct);
+    }
+    if (!r.has_header("Content-Length")) {
+      r.headers.emplace("Content-Length", std::to_string(r.body.size()));
+    }
+  }
+}
+
 inline ClientImpl::StreamHandle
 ClientImpl::open_stream(const std::string &method, const std::string &path,
                         const Params &params, const Headers &headers,
@@ -9360,34 +9414,8 @@ ClientImpl::open_stream(const std::string &method, const std::string &path,
   req.headers = headers;
   req.body = body;
 
-  // Add default headers
-  for (const auto &header : default_headers_) {
-    if (req.headers.find(header.first) == req.headers.end()) {
-      req.headers.insert(header);
-    }
-  }
-
-  // Add required headers before writing
-  if (req.headers.find("Host") == req.headers.end()) {
-    req.headers.emplace("Host", host_and_port_);
-  }
-  if (req.headers.find("Accept") == req.headers.end()) {
-    req.headers.emplace("Accept", "*/*");
-  }
-  if (req.headers.find("User-Agent") == req.headers.end()) {
-    req.headers.emplace("User-Agent", CPPHTTPLIB_VERSION);
-  }
-
-  // Add Content-Type and Content-Length for body
-  if (!body.empty()) {
-    if (!content_type.empty() &&
-        req.headers.find("Content-Type") == req.headers.end()) {
-      req.headers.emplace("Content-Type", content_type);
-    }
-    if (req.headers.find("Content-Length") == req.headers.end()) {
-      req.headers.emplace("Content-Length", std::to_string(body.size()));
-    }
-  }
+  // Prepare headers (defaults + required) via helper
+  prepare_default_headers(req, true, content_type);
 
   // Write request line
   auto &strm = *handle.stream_;
@@ -9763,42 +9791,15 @@ inline bool ClientImpl::write_request(Stream &strm, Request &req,
     }
   }
 
-  if (!req.has_header("Host")) {
-    // For Unix socket connections, use "localhost" as Host header (similar to
-    // curl behavior)
-    if (address_family_ == AF_UNIX) {
-      req.set_header("Host", "localhost");
-    } else {
-      req.set_header("Host", host_and_port_);
-    }
+  // Prepare common defaults that are shared between streaming and non-
+  // streaming paths. For requests with a body and no explicit Content-Type,
+  // preserve the historical default of "text/plain" by passing it as the
+  // content-type hint.
+  std::string ct_for_defaults;
+  if (!req.has_header("Content-Type") && !req.body.empty()) {
+    ct_for_defaults = "text/plain";
   }
-
-  if (!req.has_header("Accept")) { req.set_header("Accept", "*/*"); }
-
-  if (!req.content_receiver) {
-    if (!req.has_header("Accept-Encoding")) {
-      std::string accept_encoding;
-#ifdef CPPHTTPLIB_BROTLI_SUPPORT
-      accept_encoding = "br";
-#endif
-#ifdef CPPHTTPLIB_ZLIB_SUPPORT
-      if (!accept_encoding.empty()) { accept_encoding += ", "; }
-      accept_encoding += "gzip, deflate";
-#endif
-#ifdef CPPHTTPLIB_ZSTD_SUPPORT
-      if (!accept_encoding.empty()) { accept_encoding += ", "; }
-      accept_encoding += "zstd";
-#endif
-      req.set_header("Accept-Encoding", accept_encoding);
-    }
-
-#ifndef CPPHTTPLIB_NO_DEFAULT_USER_AGENT
-    if (!req.has_header("User-Agent")) {
-      auto agent = std::string("cpp-httplib/") + CPPHTTPLIB_VERSION;
-      req.set_header("User-Agent", agent);
-    }
-#endif
-  };
+  prepare_default_headers(req, false, ct_for_defaults);
 
   if (req.body.empty()) {
     if (req.content_provider_) {
@@ -9813,15 +9814,6 @@ inline bool ClientImpl::write_request(Stream &strm, Request &req,
           req.method == "PATCH") {
         req.set_header("Content-Length", "0");
       }
-    }
-  } else {
-    if (!req.has_header("Content-Type")) {
-      req.set_header("Content-Type", "text/plain");
-    }
-
-    if (!req.has_header("Content-Length")) {
-      auto length = std::to_string(req.body.size());
-      req.set_header("Content-Length", length);
     }
   }
 

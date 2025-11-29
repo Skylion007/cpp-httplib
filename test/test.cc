@@ -11810,6 +11810,17 @@ protected:
         return true;
       });
     });
+    // Echo headers endpoint for header-related tests
+    svr_.Get("/echo-headers", [](const Request &req, Response &res) {
+      std::string body;
+      for (const auto &h : req.headers) {
+        body.append(h.first);
+        body.push_back(':');
+        body.append(h.second);
+        body.push_back('\n');
+      }
+      res.set_content(body, "text/plain");
+    });
     thread_ = std::thread([this]() { svr_.listen("127.0.0.1", 8787); });
     svr_.wait_until_ready();
   }
@@ -11837,6 +11848,25 @@ TEST_F(OpenStreamTest, SmallBuffer) {
   while ((n = handle.read(buf, sizeof(buf))) > 0)
     result.append(buf, static_cast<size_t>(n));
   EXPECT_EQ("Hello World!", result);
+}
+
+TEST_F(OpenStreamTest, DefaultHeaders) {
+  Client cli("127.0.0.1", 8787);
+  auto handle = cli.open_stream("GET", "/echo-headers");
+  ASSERT_TRUE(handle.is_valid());
+  auto body = read_all(handle);
+  EXPECT_NE(body.find(std::string("Host:") + "127.0.0.1:8787"),
+            std::string::npos);
+  EXPECT_NE(
+      body.find(std::string("User-Agent:cpp-httplib/") + CPPHTTPLIB_VERSION),
+      std::string::npos);
+
+  // User-specified User-Agent must not be overwritten
+  auto handle2 = cli.open_stream("GET", "/echo-headers", {},
+                                 {{"User-Agent", "MyAgent/1.2"}});
+  ASSERT_TRUE(handle2.is_valid());
+  auto body2 = read_all(handle2);
+  EXPECT_NE(body2.find("User-Agent:MyAgent/1.2"), std::string::npos);
 }
 
 TEST_F(OpenStreamTest, Large) {
