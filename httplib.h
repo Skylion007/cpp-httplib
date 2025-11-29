@@ -4991,23 +4991,29 @@ inline bool read_headers(Stream &strm, Headers &headers) {
 inline bool read_content_with_length(Stream &strm, size_t len,
                                      DownloadProgress progress,
                                      ContentReceiverWithProgress out) {
+  // Use BodyReader to centralize content-length based reads (PR-02)
+  detail::BodyReader br;
+  br.stream = &strm;
+  br.content_length = len;
+  br.chunked = false;
+
   char buf[CPPHTTPLIB_RECV_BUFSIZ];
-
-  size_t r = 0;
-  while (r < len) {
-    auto read_len = static_cast<size_t>(len - r);
-    auto n = strm.read(buf, (std::min)(read_len, CPPHTTPLIB_RECV_BUFSIZ));
-    if (n <= 0) { return false; }
-
-    if (!out(buf, static_cast<size_t>(n), r, len)) { return false; }
-    r += static_cast<size_t>(n);
-
+  size_t off = 0;
+  for (;;) {
+    auto to_read = static_cast<size_t>(
+        (std::min)(CPPHTTPLIB_RECV_BUFSIZ, (len > off) ? len - off : 0));
+    if (to_read == 0) { break; }
+    auto n = br.read(buf, to_read);
+    if (n < 0) { return false; }
+    if (n == 0) { break; }
+    if (!out(buf, static_cast<size_t>(n), off, len)) { return false; }
+    off += static_cast<size_t>(n);
     if (progress) {
-      if (!progress(r, len)) { return false; }
+      if (!progress(off, len)) { return false; }
     }
   }
 
-  return true;
+  return off == len || off <= len;
 }
 
 inline void skip_content_with_length(Stream &strm, size_t len) {
@@ -5030,23 +5036,30 @@ enum class ReadContentResult {
 inline ReadContentResult
 read_content_without_length(Stream &strm, size_t payload_max_length,
                             ContentReceiverWithProgress out) {
+  // Use BodyReader to centralize reading logic (no Content-Length case)
+  detail::BodyReader br;
+  br.stream = &strm;
+  br.chunked = false;
+  // No explicit content length; prevent early eof by using a very large value
+  br.content_length = (std::numeric_limits<size_t>::max)();
+
   char buf[CPPHTTPLIB_RECV_BUFSIZ];
-  size_t r = 0;
+  size_t total_len = 0;
   for (;;) {
-    auto n = strm.read(buf, CPPHTTPLIB_RECV_BUFSIZ);
+    auto n = br.read(buf, CPPHTTPLIB_RECV_BUFSIZ);
     if (n == 0) { return ReadContentResult::Success; }
     if (n < 0) { return ReadContentResult::Error; }
 
     // Check if adding this data would exceed the payload limit
-    if (r > payload_max_length ||
-        payload_max_length - r < static_cast<size_t>(n)) {
+    if (total_len > payload_max_length ||
+        payload_max_length - total_len < static_cast<size_t>(n)) {
       return ReadContentResult::PayloadTooLarge;
     }
 
-    if (!out(buf, static_cast<size_t>(n), r, 0)) {
+    if (!out(buf, static_cast<size_t>(n), total_len, 0)) {
       return ReadContentResult::Error;
     }
-    r += static_cast<size_t>(n);
+    total_len += static_cast<size_t>(n);
   }
 
   return ReadContentResult::Success;
@@ -5056,84 +5069,68 @@ template <typename T>
 inline ReadContentResult read_content_chunked(Stream &strm, T &x,
                                               size_t payload_max_length,
                                               ContentReceiverWithProgress out) {
-  const auto bufsiz = 16;
-  char buf[bufsiz];
+  detail::BodyReader br;
+  br.stream = &strm;
+  br.chunked = true;
 
-  stream_line_reader line_reader(strm, buf, bufsiz);
-
-  if (!line_reader.getline()) { return ReadContentResult::Error; }
-
-  unsigned long chunk_len;
+  char buf[CPPHTTPLIB_RECV_BUFSIZ];
   size_t total_len = 0;
-  while (true) {
-    char *end_ptr;
 
-    chunk_len = std::strtoul(line_reader.ptr(), &end_ptr, 16);
+  for (;;) {
+    auto n = br.read(buf, CPPHTTPLIB_RECV_BUFSIZ);
+    if (n < 0) { return ReadContentResult::Error; }
+    if (n == 0) { break; }
 
-    if (end_ptr == line_reader.ptr()) { return ReadContentResult::Error; }
-    if (chunk_len == ULONG_MAX) { return ReadContentResult::Error; }
-
-    if (chunk_len == 0) { break; }
-
-    // Check if adding this chunk would exceed the payload limit
+    // Check if adding this data would exceed the payload limit
     if (total_len > payload_max_length ||
-        payload_max_length - total_len < chunk_len) {
+        payload_max_length - total_len < static_cast<size_t>(n)) {
       return ReadContentResult::PayloadTooLarge;
     }
 
-    total_len += chunk_len;
-
-    if (!read_content_with_length(strm, chunk_len, nullptr, out)) {
+    if (!out(buf, static_cast<size_t>(n), total_len, 0)) {
       return ReadContentResult::Error;
     }
 
-    if (!line_reader.getline()) { return ReadContentResult::Error; }
-
-    if (strcmp(line_reader.ptr(), "\r\n") != 0) {
-      return ReadContentResult::Error;
-    }
-
-    if (!line_reader.getline()) { return ReadContentResult::Error; }
+    total_len += static_cast<size_t>(n);
   }
 
-  assert(chunk_len == 0);
+  // After reading final chunk, parse trailers similar to previous logic
+  const auto bufsiz = 16;
+  char line_buf[bufsiz];
+  stream_line_reader line_reader(strm, line_buf, bufsiz);
 
-  // NOTE: In RFC 9112, '7.1 Chunked Transfer Coding' mentions "The chunked
-  // transfer coding is complete when a chunk with a chunk-size of zero is
-  // received, possibly followed by a trailer section, and finally terminated by
-  // an empty line". https://www.rfc-editor.org/rfc/rfc9112.html#section-7.1
-  //
-  // In '7.1.3. Decoding Chunked', however, the pseudo-code in the section
-  // does't care for the existence of the final CRLF. In other words, it seems
-  // to be ok whether the final CRLF exists or not in the chunked data.
-  // https://www.rfc-editor.org/rfc/rfc9112.html#section-7.1.3
-  //
-  // According to the reference code in RFC 9112, cpp-httplib now allows
-  // chunked transfer coding data without the final CRLF.
+  // If no CRLF / trailer lines, success
   if (!line_reader.getline()) { return ReadContentResult::Success; }
 
   // RFC 7230 Section 4.1.2 - Headers prohibited in trailers
   thread_local case_ignore::unordered_set<std::string> prohibited_trailers = {
-      // Message framing
-      "transfer-encoding", "content-length",
-
-      // Routing
+      "transfer-encoding",
+      "content-length",
       "host",
+      "authorization",
+      "www-authenticate",
+      "proxy-authenticate",
+      "proxy-authorization",
+      "cookie",
+      "set-cookie",
+      "cache-control",
+      "expect",
+      "max-forwards",
+      "pragma",
+      "range",
+      "te",
+      "age",
+      "expires",
+      "date",
+      "location",
+      "retry-after",
+      "vary",
+      "warning",
+      "content-encoding",
+      "content-type",
+      "content-range",
+      "trailer"};
 
-      // Authentication
-      "authorization", "www-authenticate", "proxy-authenticate",
-      "proxy-authorization", "cookie", "set-cookie",
-
-      // Request modifiers
-      "cache-control", "expect", "max-forwards", "pragma", "range", "te",
-
-      // Response control
-      "age", "expires", "date", "location", "retry-after", "vary", "warning",
-
-      // Payload processing
-      "content-encoding", "content-type", "content-range", "trailer"};
-
-  // Parse declared trailer headers once for performance
   case_ignore::unordered_set<std::string> declared_trailers;
   if (has_header(x.headers, "Trailer")) {
     auto trailer_header = get_header_value(x.headers, "Trailer", "", 0);
@@ -5154,12 +5151,10 @@ inline ReadContentResult read_content_chunked(Stream &strm, T &x,
       return ReadContentResult::Error;
     }
 
-    // Check trailer header count limit
     if (trailer_header_count >= CPPHTTPLIB_HEADER_MAX_COUNT) {
       return ReadContentResult::Error;
     }
 
-    // Exclude line terminator
     constexpr auto line_terminator_len = 2;
     auto end = line_reader.ptr() + line_reader.size() - line_terminator_len;
 
@@ -7287,52 +7282,55 @@ inline ssize_t Stream::write(const std::string &s) {
 }
 
 // BodyReader implementation
-inline ssize_t detail::BodyReader::read(char *buf, size_t len) {
+// Helper to read body content. Extracted for PR-02 refactor (step 1).
+namespace detail {
+inline ssize_t read_body_content(Stream *stream, BodyReader &br, char *buf,
+                                 size_t len) {
   if (!stream) {
-    last_error = Error::Connection;
+    br.last_error = Error::Connection;
     return -1;
   }
-  if (eof) { return 0; }
+  if (br.eof) { return 0; }
 
-  if (!chunked) {
+  if (!br.chunked) {
     // Content-Length based reading
-    if (bytes_read >= content_length) {
-      eof = true;
+    if (br.bytes_read >= br.content_length) {
+      br.eof = true;
       return 0;
     }
 
-    auto remaining = content_length - bytes_read;
+    auto remaining = br.content_length - br.bytes_read;
     auto to_read = (std::min)(len, remaining);
     auto n = stream->read(buf, to_read);
 
     if (n < 0) {
-      last_error = Error::Read;
-      eof = true;
+      br.last_error = Error::Read;
+      br.eof = true;
       return n;
     }
     if (n == 0) {
       // Unexpected EOF before content_length
-      last_error = Error::Read;
-      eof = true;
+      br.last_error = Error::Read;
+      br.eof = true;
       return 0;
     }
 
-    bytes_read += static_cast<size_t>(n);
-    if (bytes_read >= content_length) { eof = true; }
+    br.bytes_read += static_cast<size_t>(n);
+    if (br.bytes_read >= br.content_length) { br.eof = true; }
     return n;
   }
 
   // Chunked transfer encoding
   // If no data remaining in current chunk, read next chunk header
-  while (current_chunk_remaining == 0) {
+  while (br.current_chunk_remaining == 0) {
     // Read chunk size line
     const size_t line_buf_size = 32;
     char line_buf[line_buf_size];
     stream_line_reader line_reader(*stream, line_buf, line_buf_size);
 
     if (!line_reader.getline()) {
-      last_error = Error::Read;
-      eof = true;
+      br.last_error = Error::Read;
+      br.eof = true;
       return 0;
     }
 
@@ -7346,39 +7344,44 @@ inline ssize_t detail::BodyReader::read(char *buf, size_t len) {
     char *end_ptr;
     auto chunk_size = std::strtoul(line_reader.ptr(), &end_ptr, 16);
     if (end_ptr == line_reader.ptr() || chunk_size == ULONG_MAX) {
-      last_error = Error::Read; // Invalid chunk format
+      br.last_error = Error::Read; // Invalid chunk format
       return -1;
     }
 
     if (chunk_size == 0) {
       // Final chunk
-      eof = true;
+      br.eof = true;
       return 0;
     }
 
-    current_chunk_remaining = chunk_size;
+    br.current_chunk_remaining = chunk_size;
   }
 
   // Read from current chunk
-  auto to_read = (std::min)(len, current_chunk_remaining);
+  auto to_read = (std::min)(len, br.current_chunk_remaining);
   auto n = stream->read(buf, to_read);
 
   if (n < 0) {
-    last_error = Error::Read;
-    eof = true;
+    br.last_error = Error::Read;
+    br.eof = true;
     return n;
   }
   if (n == 0) {
     // Unexpected EOF in chunk
-    last_error = Error::Read;
-    eof = true;
+    br.last_error = Error::Read;
+    br.eof = true;
     return 0;
   }
 
-  current_chunk_remaining -= static_cast<size_t>(n);
-  bytes_read += static_cast<size_t>(n);
+  br.current_chunk_remaining -= static_cast<size_t>(n);
+  br.bytes_read += static_cast<size_t>(n);
 
   return n;
+}
+} // namespace detail
+
+inline ssize_t detail::BodyReader::read(char *buf, size_t len) {
+  return detail::read_body_content(stream, *this, buf, len);
 }
 
 namespace detail {
@@ -8253,8 +8256,34 @@ inline bool Server::read_content_core(
     return true;
   }
 
-  if (!detail::read_content(strm, req, payload_max_length_, res.status, nullptr,
-                            out, true)) {
+  if (!detail::prepare_content_receiver(
+          req, res.status, std::move(out), true,
+          [&](const ContentReceiverWithProgress &out2) {
+            // Use BodyReader-based incremental reading for consistency
+            detail::BodyReader br;
+            br.stream = &strm;
+
+            auto content_length_str = req.get_header_value("Content-Length");
+            if (!content_length_str.empty()) {
+              br.content_length =
+                  static_cast<size_t>(std::stoull(content_length_str));
+            }
+
+            auto transfer_encoding = req.get_header_value("Transfer-Encoding");
+            br.chunked = (transfer_encoding == "chunked");
+
+            char buf[CPPHTTPLIB_RECV_BUFSIZ];
+            size_t off = 0;
+            for (;;) {
+              auto n = br.read(buf, CPPHTTPLIB_RECV_BUFSIZ);
+              if (n < 0) { return false; }
+              if (n == 0) { return true; }
+              if (!out2(buf, static_cast<size_t>(n), off, br.content_length)) {
+                return false;
+              }
+              off += static_cast<size_t>(n);
+            }
+          })) {
     return false;
   }
 
@@ -10127,6 +10156,7 @@ inline bool ClientImpl::process_request(Stream &strm, Request &req,
       }
       return ret;
     };
+    (void)progress;
 
     if (res.has_header("Content-Length")) {
       if (!req.content_receiver) {
@@ -10142,9 +10172,38 @@ inline bool ClientImpl::process_request(Stream &strm, Request &req,
 
     if (res.status != StatusCode::NotModified_304) {
       int dummy_status;
-      if (!detail::read_content(strm, res, (std::numeric_limits<size_t>::max)(),
-                                dummy_status, std::move(progress),
-                                std::move(out), decompress_)) {
+      if (!detail::prepare_content_receiver(
+              res, dummy_status, std::move(out), decompress_,
+              [&](const ContentReceiverWithProgress &out2) {
+                // Use BodyReader-based incremental reading to keep behavior
+                // consistent with open_stream/BodyReader.
+                detail::BodyReader br;
+                br.stream = &strm;
+
+                auto content_length_str =
+                    res.get_header_value("Content-Length");
+                if (!content_length_str.empty()) {
+                  br.content_length =
+                      static_cast<size_t>(std::stoull(content_length_str));
+                }
+
+                auto transfer_encoding =
+                    res.get_header_value("Transfer-Encoding");
+                br.chunked = (transfer_encoding == "chunked");
+
+                char buf[CPPHTTPLIB_RECV_BUFSIZ];
+                size_t off = 0;
+                for (;;) {
+                  auto n = br.read(buf, CPPHTTPLIB_RECV_BUFSIZ);
+                  if (n < 0) { return false; }
+                  if (n == 0) { return true; }
+                  if (!out2(buf, static_cast<size_t>(n), off,
+                            br.content_length)) {
+                    return false;
+                  }
+                  off += static_cast<size_t>(n);
+                }
+              })) {
         if (error != Error::Canceled) { error = Error::Read; }
         output_error_log(error, &req);
         return false;

@@ -11775,11 +11775,80 @@ TEST(BodyReaderTest, Error) {
   EXPECT_EQ(Error::Read, reader.last_error);
 }
 
+TEST(BodyReaderTest, TrailerParsing) {
+  // Chunked body with one trailer header declared
+  // Chunks: "4\r\nWiki\r\n5\r\npedia\r\n0\r\nX-Trailer: value\r\n\r\n"
+  MockStream stream("4\r\nWiki\r\n5\r\npedia\r\n0\r\nX-Trailer: value\r\n\r\n");
+  Response res;
+  res.headers.emplace("Trailer", "X-Trailer");
+
+  std::string body;
+  auto receiver = [&](const char *buf, size_t n, size_t off, size_t len) {
+    body.append(buf, n);
+    return true;
+  };
+
+  auto result =
+      detail::read_content_chunked(stream, res, (size_t)1024, receiver);
+  EXPECT_EQ(detail::ReadContentResult::Success, result);
+  EXPECT_EQ(std::string("Wikipedia"), body);
+  EXPECT_TRUE(res.has_trailer("X-Trailer"));
+  EXPECT_EQ(std::string("value"), res.get_trailer_value("X-Trailer"));
+}
+
+TEST(BodyReaderTest, InvalidChunk) {
+  // Invalid chunk size (non-hex)
+  MockStream stream("G\r\nabc\r\n0\r\n\r\n");
+  Response res;
+
+  std::string body;
+  auto receiver = [&](const char *buf, size_t n, size_t off, size_t len) {
+    body.append(buf, n);
+    return true;
+  };
+
+  auto result =
+      detail::read_content_chunked(stream, res, (size_t)1024, receiver);
+  EXPECT_EQ(detail::ReadContentResult::Error, result);
+}
+
+TEST(BodyReaderTest, UnexpectedEOF) {
+  // Content-Length declared but stream ends early
+  MockStream stream("Hi");
+  detail::BodyReader reader;
+  reader.stream = &stream;
+  reader.content_length = 5;
+  char buf[32];
+  EXPECT_EQ(2, reader.read(buf, sizeof(buf)));
+  EXPECT_EQ(0, reader.read(buf, sizeof(buf)));
+  EXPECT_EQ(Error::Read, reader.last_error);
+  EXPECT_TRUE(reader.eof);
+}
+
+TEST(BodyReaderTest, PayloadLimit) {
+  // No Content-Length: read_content_without_length should enforce
+  // payload_max_length
+  MockStream stream("abcd");
+
+  std::string body;
+  auto receiver = [&](const char *buf, size_t n, size_t off, size_t len) {
+    body.append(buf, n);
+    return true;
+  };
+
+  auto result = detail::read_content_without_length(stream, 2u, receiver);
+  EXPECT_EQ(detail::ReadContentResult::PayloadTooLarge, result);
+}
+
 // Memory buffer mode removed: StreamHandle reads only from socket streams.
 // Mock-based StreamHandle tests relying on private internals are removed.
 
 class OpenStreamTest : public ::testing::Test {
 protected:
+  // Synchronization for slow-stream endpoint used in timeout tests
+  std::mutex slow_mtx_;
+  std::condition_variable slow_cv_;
+  bool slow_proceed_ = false;
   void SetUp() override {
     svr_.Get("/hello", [](const Request &, Response &res) {
       res.set_content("Hello World!", "text/plain");
@@ -11820,6 +11889,20 @@ protected:
         body.push_back('\n');
       }
       res.set_content(body, "text/plain");
+    });
+    // Slow stream endpoint for timeout testing (waits on condition variable)
+    svr_.Get("/slow-stream", [this](const Request &, Response &res) {
+      res.set_chunked_content_provider(
+          "text/plain", [this](size_t offset, DataSink &sink) {
+            if (offset == 0) {
+              std::unique_lock<std::mutex> lock(slow_mtx_);
+              slow_cv_.wait(lock, [this] { return slow_proceed_; });
+              sink.write("X", 1);
+              return true;
+            }
+            sink.done();
+            return true;
+          });
     });
     thread_ = std::thread([this]() { svr_.listen("127.0.0.1", 8787); });
     svr_.wait_until_ready();
@@ -11887,6 +11970,31 @@ TEST_F(OpenStreamTest, Chunked) {
   EXPECT_TRUE(handle.response && handle.response->get_header_value(
                                      "Transfer-Encoding") == "chunked");
   EXPECT_EQ("chunkchunkchunk", read_all(handle));
+}
+
+TEST_F(OpenStreamTest, StreamTimeout) {
+  Client cli("127.0.0.1", 8787);
+  // Set a short client read timeout (300 ms)
+  cli.set_read_timeout(0, 300000);
+
+  auto handle = cli.open_stream("GET", "/slow-stream");
+  ASSERT_TRUE(handle.is_valid()) << "Error: " << static_cast<int>(handle.error);
+
+  char buf[16];
+  auto n = handle.read(buf, sizeof(buf));
+
+  // Expect a read error due to client read timeout (n may be 0 or -1 depending
+  // on how the lower-level read/line reader reports the timeout)
+  EXPECT_LE(n, 0);
+  EXPECT_TRUE(handle.has_read_error());
+  EXPECT_EQ(Error::Read, handle.get_read_error());
+
+  // Allow server handler to finish so TearDown can stop the server cleanly
+  {
+    std::lock_guard<std::mutex> lk(slow_mtx_);
+    slow_proceed_ = true;
+  }
+  slow_cv_.notify_one();
 }
 
 #ifdef CPPHTTPLIB_ZLIB_SUPPORT
