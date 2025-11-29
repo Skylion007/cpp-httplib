@@ -12058,6 +12058,17 @@ protected:
             return true;
           });
     });
+    // Truncated Content-Length response for stream EOF test
+    svr_.Get("/truncated", [](const Request &, Response &res) {
+      // Declare Content-Length = 5 but provide only 2 bytes then fail
+      res.set_content_provider(
+          5, "text/plain",
+          [](size_t offset, size_t /*length*/, DataSink &sink) {
+            if (offset == 0) { sink.write("Hi", 2); }
+            // Simulate provider failure / early termination
+            return false;
+          });
+    });
     thread_ = std::thread([this]() { svr_.listen("127.0.0.1", 8787); });
     svr_.wait_until_ready();
   }
@@ -12124,6 +12135,21 @@ TEST_F(OpenStreamTest, Chunked) {
   EXPECT_TRUE(handle.response && handle.response->get_header_value(
                                      "Transfer-Encoding") == "chunked");
   EXPECT_EQ("chunkchunkchunk", read_all(handle));
+}
+
+TEST_F(OpenStreamTest, ContentLength_Short_EOF) {
+  Client cli("127.0.0.1", 8787);
+  auto handle = cli.open_stream("GET", "/truncated");
+  ASSERT_TRUE(handle.is_valid());
+
+  auto body = read_all(handle);
+
+  // The client should receive the bytes that were sent but then detect
+  // an early EOF (protocol error) when the connection closed before
+  // the declared Content-Length was satisfied.
+  EXPECT_EQ(std::string("Hi"), body);
+  EXPECT_TRUE(handle.has_read_error());
+  EXPECT_EQ(Error::Read, handle.get_read_error());
 }
 
 TEST_F(OpenStreamTest, StreamTimeout) {
