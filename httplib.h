@@ -1475,6 +1475,16 @@ struct BodyReader {
   bool has_error() const { return last_error != Error::Success; }
 };
 
+// Thin helper to centralize body reads. Start with a minimal wrapper so
+// we can incrementally replace call sites without changing behavior.
+inline ssize_t read_body_content(Stream *stream, BodyReader &br, char *buf,
+                                 size_t len) {
+  // Forward to BodyReader::read for now. `stream` parameter is kept for
+  // future use when read operations need stream context.
+  (void)stream;
+  return br.read(buf, len);
+}
+
 // Forward declaration for compression support in StreamHandle
 class decompressor;
 
@@ -4993,10 +5003,22 @@ inline bool read_content_with_length(Stream &strm, size_t len,
                                      ContentReceiverWithProgress out) {
   char buf[CPPHTTPLIB_RECV_BUFSIZ];
 
+  // Use a BodyReader and the new wrapper helper so we can gradually
+  // centralize body-reading behaviour. This is functionally equivalent
+  // to the previous direct reads but routes reads through
+  // `detail::read_body_content`.
+  detail::BodyReader br;
+  br.stream = &strm;
+  br.content_length = len;
+  br.chunked = false;
+  br.bytes_read = 0;
+  br.last_error = Error::Success;
+
   size_t r = 0;
   while (r < len) {
     auto read_len = static_cast<size_t>(len - r);
-    auto n = strm.read(buf, (std::min)(read_len, CPPHTTPLIB_RECV_BUFSIZ));
+    auto to_read = (std::min)(read_len, CPPHTTPLIB_RECV_BUFSIZ);
+    auto n = detail::read_body_content(&strm, br, buf, to_read);
     if (n <= 0) { return false; }
 
     if (!out(buf, static_cast<size_t>(n), r, len)) { return false; }
@@ -5083,8 +5105,27 @@ inline ReadContentResult read_content_chunked(Stream &strm, T &x,
 
     total_len += chunk_len;
 
-    if (!read_content_with_length(strm, chunk_len, nullptr, out)) {
-      return ReadContentResult::Error;
+    {
+      // Read this chunk via BodyReader + helper to centralize read logic.
+      detail::BodyReader br;
+      br.stream = &strm;
+      br.content_length = chunk_len;
+      br.chunked = false;
+      br.bytes_read = 0;
+      br.last_error = Error::Success;
+
+      size_t r2 = 0;
+      while (r2 < chunk_len) {
+        auto to_read = (std::min)(chunk_len - r2, static_cast<size_t>(bufsiz));
+        auto n = detail::read_body_content(&strm, br, buf, to_read);
+        if (n <= 0) { return ReadContentResult::Error; }
+
+        if (!out(buf, static_cast<size_t>(n), r2, chunk_len)) {
+          return ReadContentResult::Error;
+        }
+
+        r2 += static_cast<size_t>(n);
+      }
     }
 
     if (!line_reader.getline()) { return ReadContentResult::Error; }

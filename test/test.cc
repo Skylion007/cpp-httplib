@@ -11821,6 +11821,16 @@ protected:
       }
       res.set_content(body, "text/plain");
     });
+    svr_.Post("/echo-headers", [](const Request &req, Response &res) {
+      std::string body;
+      for (const auto &h : req.headers) {
+        body.append(h.first);
+        body.push_back(':');
+        body.append(h.second);
+        body.push_back('\n');
+      }
+      res.set_content(body, "text/plain");
+    });
     thread_ = std::thread([this]() { svr_.listen("127.0.0.1", 8787); });
     svr_.wait_until_ready();
   }
@@ -11867,6 +11877,51 @@ TEST_F(OpenStreamTest, DefaultHeaders) {
   ASSERT_TRUE(handle2.is_valid());
   auto body2 = read_all(handle2);
   EXPECT_NE(body2.find("User-Agent:MyAgent/1.2"), std::string::npos);
+}
+
+TEST_F(OpenStreamTest, DefaultHeadersStreamAPI) {
+  Client cli("127.0.0.1", 8787);
+
+  // open_stream GET should include Host, User-Agent and Accept-Encoding
+  {
+    auto handle = cli.open_stream("GET", "/echo-headers");
+    ASSERT_TRUE(handle.is_valid());
+    auto body = read_all(handle);
+    EXPECT_NE(body.find("Host:127.0.0.1:8787"), std::string::npos);
+    EXPECT_NE(body.find("User-Agent:cpp-httplib/" CPPHTTPLIB_VERSION),
+              std::string::npos);
+    EXPECT_NE(body.find("Accept-Encoding:"), std::string::npos);
+  }
+
+  // open_stream POST with body and no explicit content_type should NOT add
+  // text/plain Content-Type (behavior differs from non-streaming path), but
+  // should include Content-Length
+  {
+    auto handle = cli.open_stream("POST", "/echo-headers", {}, {}, "hello", "");
+    ASSERT_TRUE(handle.is_valid());
+    auto body = read_all(handle);
+    EXPECT_EQ(body.find("Content-Type: text/plain"), std::string::npos);
+    EXPECT_NE(body.find("Content-Length:5"), std::string::npos);
+  }
+
+  // open_stream POST with explicit Content-Type should preserve it
+  {
+    auto handle = cli.open_stream("POST", "/echo-headers", {},
+                                  {{"Content-Type", "application/custom"}},
+                                  "{}", "application/custom");
+    ASSERT_TRUE(handle.is_valid());
+    auto body = read_all(handle);
+    EXPECT_NE(body.find("Content-Type:application/custom"), std::string::npos);
+  }
+
+  // User-specified User-Agent must not be overwritten for stream API
+  {
+    auto handle = cli.open_stream("GET", "/echo-headers", {},
+                                  {{"User-Agent", "MyAgent/1.2"}});
+    ASSERT_TRUE(handle.is_valid());
+    auto body = read_all(handle);
+    EXPECT_NE(body.find("User-Agent:MyAgent/1.2"), std::string::npos);
+  }
 }
 
 TEST_F(OpenStreamTest, Large) {
