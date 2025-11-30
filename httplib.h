@@ -1761,7 +1761,10 @@ protected:
   virtual bool create_and_connect_socket(Socket &socket, Error &error);
   // Thin wrapper to centralize connection establishment for future refactors.
   // Currently delegates to `create_and_connect_socket` to preserve behavior.
-  bool ensure_socket_connection(Socket &socket, Error &error);
+  // Made virtual so derived clients (e.g. SSLClient) can perform
+  // post-connect initialization (like SSL handshake) while keeping
+  // default behavior unchanged.
+  virtual bool ensure_socket_connection(Socket &socket, Error &error);
 
   // All of:
   //   shutdown_ssl
@@ -2209,6 +2212,7 @@ public:
 
 private:
   bool create_and_connect_socket(Socket &socket, Error &error) override;
+  bool ensure_socket_connection(Socket &socket, Error &error) override;
   void shutdown_ssl(Socket &socket, bool shutdown_gracefully) override;
   void shutdown_ssl_impl(Socket &socket, bool shutdown_gracefully);
 
@@ -9364,6 +9368,29 @@ inline bool ClientImpl::ensure_socket_connection(Socket &socket, Error &error) {
   return create_and_connect_socket(socket, error);
 }
 
+// SSLClient: perform post-connect SSL initialization when appropriate.
+inline bool SSLClient::ensure_socket_connection(Socket &socket, Error &error) {
+  // First, perform the base connection logic (creates and connects socket).
+  if (!ClientImpl::ensure_socket_connection(socket, error)) { return false; }
+
+  // If using an HTTP proxy (CONNECT), defer SSL initialization to the
+  // caller because proxy CONNECT handling requires request/response
+  // processing which is done at higher call sites (e.g. send_).
+  if (!proxy_host_.empty() && proxy_port_ != -1) { return true; }
+
+  // No proxy: initialize SSL immediately. If initialization fails,
+  // close the socket and report failure.
+  if (!initialize_ssl(socket, error)) {
+    // Thread-safe to close everything because callers should ensure
+    // socket_mutex_ is held when appropriate; use shutdown/close helpers.
+    shutdown_socket(socket);
+    close_socket(socket);
+    return false;
+  }
+
+  return true;
+}
+
 inline void ClientImpl::shutdown_ssl(Socket & /*socket*/,
                                      bool /*shutdown_gracefully*/) {
   // If there are any requests in flight from threads other than us, then it's
@@ -9494,9 +9521,16 @@ inline bool ClientImpl::send_(Request &req, Response &res, Error &error) {
           }
         }
 
-        if (!scli.initialize_ssl(socket_, error)) {
-          output_error_log(error, &req);
-          return false;
+        // If a proxy is configured, CONNECT processing occurs after the
+        // base connect and may replace the socket; in that case we must
+        // perform SSL initialization here. If no proxy is used, the
+        // SSL initialization was already performed in
+        // `SSLClient::ensure_socket_connection`.
+        if (!proxy_host_.empty() && proxy_port_ != -1) {
+          if (!scli.initialize_ssl(socket_, error)) {
+            output_error_log(error, &req);
+            return false;
+          }
         }
       }
 #endif
@@ -9664,12 +9698,19 @@ ClientImpl::open_stream(const std::string &method, const std::string &path,
       }
 
 #ifdef CPPHTTPLIB_OPENSSL_SUPPORT
-      // Initialize SSL for SSL clients
+      // Initialize SSL for SSL clients. If a proxy is configured, the
+      // SSL handshake must be performed after proxy CONNECT processing
+      // (done at higher call sites), so only perform initialize_ssl here
+      // when a proxy is configured—otherwise
+      // `SSLClient::ensure_socket_connection` already performed SSL
+      // initialization for the no-proxy case.
       if (is_ssl()) {
         auto &scli = static_cast<SSLClient &>(*this);
-        if (!scli.initialize_ssl(socket_, handle.error)) {
-          handle.response.reset();
-          return handle;
+        if (!proxy_host_.empty() && proxy_port_ != -1) {
+          if (!scli.initialize_ssl(socket_, handle.error)) {
+            handle.response.reset();
+            return handle;
+          }
         }
       }
 #endif
