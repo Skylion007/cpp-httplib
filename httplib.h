@@ -1922,6 +1922,12 @@ private:
                  std::chrono::time_point<std::chrono::steady_clock> start_time,
                  std::function<bool(Stream &strm)> callback);
   virtual bool is_ssl() const;
+
+  // Helper: transfer the current `socket_` ownership into a StreamHandle's
+  // ClientConnection. This moves `socket_.sock`/`socket_.ssl` into
+  // `handle.connection_` and resets `socket_` to closed. This method MUST be
+  // called with `socket_mutex_` held.
+  void transfer_socket_ownership_to_handle(StreamHandle &handle);
 };
 
 class Client {
@@ -9716,13 +9722,8 @@ ClientImpl::open_stream(const std::string &method, const std::string &path,
 #endif
     }
 
-    // Transfer socket ownership to StreamHandle
-    handle.connection_->sock = socket_.sock;
-#ifdef CPPHTTPLIB_OPENSSL_SUPPORT
-    handle.connection_->ssl = socket_.ssl;
-    socket_.ssl = nullptr;
-#endif
-    socket_.sock = INVALID_SOCKET;
+    // Transfer socket ownership to StreamHandle (centralized helper)
+    transfer_socket_ownership_to_handle(handle);
   }
 
   // Create appropriate stream for the transferred socket
@@ -9806,6 +9807,17 @@ ClientImpl::open_stream(const std::string &method, const std::string &path,
   }
 
   return handle;
+}
+
+inline void
+ClientImpl::transfer_socket_ownership_to_handle(StreamHandle &handle) {
+  // Caller must hold socket_mutex_. Move socket_ contents into handle.
+  handle.connection_->sock = socket_.sock;
+#ifdef CPPHTTPLIB_OPENSSL_SUPPORT
+  handle.connection_->ssl = socket_.ssl;
+  socket_.ssl = nullptr;
+#endif
+  socket_.sock = INVALID_SOCKET;
 }
 
 inline bool ClientImpl::handle_request(Stream &strm, Request &req,

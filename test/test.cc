@@ -146,6 +146,48 @@ TEST(BenchmarkTest, localhost) { performance_test("localhost"); }
 
 TEST(BenchmarkTest, v6) { performance_test("::1"); }
 
+TEST(ParityTest, GetVsOpenStream) {
+  Server svr;
+
+  const std::string path = "/parity";
+  const std::string content = "Parity test content: hello world";
+
+  svr.Get(path, [&](const Request & /*req*/, Response &res) {
+    res.set_content(content, "text/plain");
+  });
+
+  auto listen_thread = std::thread([&]() { svr.listen(HOST, PORT); });
+  auto se = detail::scope_exit([&] {
+    svr.stop();
+    listen_thread.join();
+    ASSERT_FALSE(svr.is_running());
+  });
+
+  svr.wait_until_ready();
+
+  Client cli(HOST, PORT);
+
+  // Non-stream path
+  auto r1 = cli.Get(path);
+  ASSERT_TRUE(r1);
+  EXPECT_EQ(StatusCode::OK_200, r1->status);
+  std::string body1 = r1->body;
+
+  // Stream path
+  auto h = cli.open_stream("GET", path);
+  ASSERT_TRUE(h.is_valid());
+  std::string body2;
+  char buf[128];
+  for (;;) {
+    auto n = h.read(buf, sizeof(buf));
+    if (n < 0) { break; }
+    if (n == 0) { break; }
+    body2.append(buf, static_cast<size_t>(n));
+  }
+
+  EXPECT_EQ(body1, body2);
+}
+
 class UnixSocketTest : public ::testing::Test {
 protected:
   void TearDown() override { std::remove(pathname_.c_str()); }
