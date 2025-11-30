@@ -12154,3 +12154,144 @@ TEST_F(SSLOpenStreamTest, PostChunked) {
   EXPECT_EQ("Chunked SSL Data", body);
 }
 #endif // CPPHTTPLIB_OPENSSL_SUPPORT
+
+// --- Parity tests: ensure streaming and non-streaming APIs produce identical
+// decompressed output for various encodings.
+
+// Helper to compress data with provided compressor type T (from detail
+// namespace)
+template <typename Compressor>
+static std::string compress_payload_for_parity(const std::string &in) {
+  std::string out;
+  Compressor compressor;
+  bool ok = compressor.compress(in.data(), in.size(), /*last=*/true,
+                                [&](const char *data, size_t n) {
+                                  out.append(data, n);
+                                  return true;
+                                });
+  EXPECT_TRUE(ok);
+  return out;
+}
+
+#ifdef CPPHTTPLIB_ZLIB_SUPPORT
+TEST(ParityTest, Gzip) {
+  const std::string original = "The quick brown fox jumps over the lazy dog";
+  const std::string compressed =
+      compress_payload_for_parity<detail::gzip_compressor>(original);
+
+  Server svr;
+
+  svr.Get("/parity-gzip", [&](const Request & /*req*/, Response &res) {
+    // Set compressed body and Content-Encoding header
+    res.set_content(compressed, "application/octet-stream");
+    res.set_header("Content-Encoding", "gzip");
+  });
+
+  auto t = std::thread([&] { svr.listen("localhost", 1234); });
+  auto se = detail::scope_exit([&] {
+    svr.stop();
+    t.join();
+    ASSERT_FALSE(svr.is_running());
+  });
+
+  svr.wait_until_ready();
+
+  Client cli("localhost", 1234);
+
+  // Non-streaming
+  {
+    auto res = cli.Get("/parity-gzip");
+    ASSERT_TRUE(res);
+    EXPECT_EQ(StatusCode::OK_200, res->status);
+    EXPECT_EQ(original, res->body);
+  }
+
+  // Streaming
+  {
+    auto h = cli.open_stream("GET", "/parity-gzip");
+    ASSERT_TRUE(h.is_valid());
+    auto body = read_all(h);
+    EXPECT_EQ(original, body);
+  }
+}
+#endif
+
+#ifdef CPPHTTPLIB_BROTLI_SUPPORT
+TEST(ParityTest, Brotli) {
+  const std::string original = "Hello, brotli parity test payload";
+  const std::string compressed =
+      compress_payload_for_parity<detail::brotli_compressor>(original);
+
+  Server svr;
+
+  svr.Get("/parity-br", [&](const Request & /*req*/, Response &res) {
+    res.set_content(compressed, "application/octet-stream");
+    res.set_header("Content-Encoding", "br");
+  });
+
+  auto t = std::thread([&] { svr.listen("localhost", 1234); });
+  auto se = detail::scope_exit([&] {
+    svr.stop();
+    t.join();
+    ASSERT_FALSE(svr.is_running());
+  });
+
+  svr.wait_until_ready();
+
+  Client cli("localhost", 1234);
+
+  {
+    auto res = cli.Get("/parity-br");
+    ASSERT_TRUE(res);
+    EXPECT_EQ(StatusCode::OK_200, res->status);
+    EXPECT_EQ(original, res->body);
+  }
+
+  {
+    auto h = cli.open_stream("GET", "/parity-br");
+    ASSERT_TRUE(h.is_valid());
+    auto body = read_all(h);
+    EXPECT_EQ(original, body);
+  }
+}
+#endif
+
+#ifdef CPPHTTPLIB_ZSTD_SUPPORT
+TEST(ParityTest, Zstd) {
+  const std::string original = "Zstandard parity test payload";
+  const std::string compressed =
+      compress_payload_for_parity<detail::zstd_compressor>(original);
+
+  Server svr;
+
+  svr.Get("/parity-zstd", [&](const Request & /*req*/, Response &res) {
+    res.set_content(compressed, "application/octet-stream");
+    res.set_header("Content-Encoding", "zstd");
+  });
+
+  auto t = std::thread([&] { svr.listen("localhost", 1234); });
+  auto se = detail::scope_exit([&] {
+    svr.stop();
+    t.join();
+    ASSERT_FALSE(svr.is_running());
+  });
+
+  svr.wait_until_ready();
+
+  Client cli("localhost", 1234);
+
+  {
+    auto res = cli.Get("/parity-zstd");
+    ASSERT_TRUE(res);
+    EXPECT_EQ(StatusCode::OK_200, res->status);
+    EXPECT_EQ(original, res->body);
+  }
+
+  {
+    auto h = cli.open_stream("GET", "/parity-zstd");
+    ASSERT_TRUE(h.is_valid());
+    auto body = read_all(h);
+    EXPECT_EQ(original, body);
+  }
+}
+#endif
