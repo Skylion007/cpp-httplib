@@ -1759,6 +1759,9 @@ protected:
   };
 
   virtual bool create_and_connect_socket(Socket &socket, Error &error);
+  // Thin wrapper to centralize connection establishment for future refactors.
+  // Currently delegates to `create_and_connect_socket` to preserve behavior.
+  bool ensure_socket_connection(Socket &socket, Error &error);
 
   // All of:
   //   shutdown_ssl
@@ -9356,6 +9359,11 @@ inline bool ClientImpl::create_and_connect_socket(Socket &socket,
   return true;
 }
 
+inline bool ClientImpl::ensure_socket_connection(Socket &socket, Error &error) {
+  // Keep behavior identical to `create_and_connect_socket` for now.
+  return create_and_connect_socket(socket, error);
+}
+
 inline void ClientImpl::shutdown_ssl(Socket & /*socket*/,
                                      bool /*shutdown_gracefully*/) {
   // If there are any requests in flight from threads other than us, then it's
@@ -9468,7 +9476,7 @@ inline bool ClientImpl::send_(Request &req, Response &res, Error &error) {
     }
 
     if (!is_alive) {
-      if (!create_and_connect_socket(socket_, error)) {
+      if (!ensure_socket_connection(socket_, error)) {
         output_error_log(error, &req);
         return false;
       }
@@ -9650,7 +9658,7 @@ ClientImpl::open_stream(const std::string &method, const std::string &path,
     }
 
     if (!is_alive) {
-      if (!create_and_connect_socket(socket_, handle.error)) {
+      if (!ensure_socket_connection(socket_, handle.error)) {
         handle.response.reset();
         return handle;
       }
@@ -12037,7 +12045,7 @@ inline bool SSLClient::connect_with_proxy(
         close_socket(socket);
 
         // Create a new socket for the authenticated CONNECT request
-        if (!create_and_connect_socket(socket, error)) {
+        if (!ensure_socket_connection(socket, error)) {
           success = false;
           output_error_log(error, nullptr);
           return false;
