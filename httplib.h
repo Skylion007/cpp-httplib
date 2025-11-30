@@ -9374,6 +9374,7 @@ inline bool ClientImpl::ensure_socket_connection(Socket &socket, Error &error) {
   return create_and_connect_socket(socket, error);
 }
 
+#ifdef CPPHTTPLIB_OPENSSL_SUPPORT
 // SSLClient: perform post-connect SSL initialization when appropriate.
 inline bool SSLClient::ensure_socket_connection(Socket &socket, Error &error) {
   // First, perform the base connection logic (creates and connects socket).
@@ -9396,6 +9397,7 @@ inline bool SSLClient::ensure_socket_connection(Socket &socket, Error &error) {
 
   return true;
 }
+#endif
 
 inline void ClientImpl::shutdown_ssl(Socket & /*socket*/,
                                      bool /*shutdown_gracefully*/) {
